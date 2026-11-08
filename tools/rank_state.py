@@ -65,7 +65,7 @@ ISO = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # names exactly these, so the spec and the tool cannot drift apart.
 AGENT_STATUSES = ("scored", "expired", "unreachable")
 
-# The values the two veto gates may take (rank.md Step 2). Step 5's veto is an
+# The values the three veto gates may take (rank.md Step 2). Step 5's veto is an
 # exact match on "FAIL", so any other spelling would shortlist a deal-breaker.
 GATE_VERDICTS = ("PASS", "FAIL", "FLAG")
 
@@ -400,7 +400,7 @@ def cmd_apply(args) -> int:
             errors.append({"key": key, "error": str(exc)})
             continue
         bad_gate = next(
-            (f for f in ("location_verdict", "language_gate") if result.get(f) and result[f] not in GATE_VERDICTS),
+            (f for f in ("location_verdict", "language_gate", "eligibility_gate") if result.get(f) and result[f] not in GATE_VERDICTS),
             None,
         )
         if bad_gate:
@@ -439,6 +439,13 @@ def cmd_apply(args) -> int:
             entry.pop("language_note", None)
         else:
             entry["language_note"] = result.get("language_note")
+        # Eligibility Gate, hard deal-breakers and (Korean market) the Korea
+        # gate in 04-job-evaluation.md. Absent means the agent found no problem.
+        entry["eligibility_gate"] = result.get("eligibility_gate") or "PASS"
+        if entry["eligibility_gate"] == "PASS":
+            entry.pop("eligibility_note", None)
+        else:
+            entry["eligibility_note"] = result.get("eligibility_note")
         # Absence is not a correction: a fetch that degraded to a listing page
         # returns no deadline, and blanking a stored one would erase a real
         # date and make the entry immortal to rule 6's sweep.
@@ -479,6 +486,8 @@ def cmd_apply(args) -> int:
                 "location_verdict": entry["location_verdict"],
                 "language_gate": entry["language_gate"],
                 "language_note": entry.get("language_note"),
+                "eligibility_gate": entry.get("eligibility_gate", "PASS"),
+                "eligibility_note": entry.get("eligibility_note"),
                 "deadline": entry.get("deadline"),
                 "posted_date": entry.get("posted_date"),
                 "urgent": bool(parsed and today <= parsed <= today + timedelta(days=URGENT_DAYS)),
@@ -492,7 +501,7 @@ def cmd_apply(args) -> int:
         save_state(args.state, doc)
 
     rows.sort(key=lambda r: (r["score"], r["urgent"]), reverse=True)
-    veto = lambda r: r["location_verdict"] == "FAIL" or r["language_gate"] == "FAIL"
+    veto = lambda r: "FAIL" in (r["location_verdict"], r["language_gate"], r["eligibility_gate"])
     vetoed = [r for r in rows if veto(r)]
     ranked = [r for r in rows if not veto(r)]
     print(

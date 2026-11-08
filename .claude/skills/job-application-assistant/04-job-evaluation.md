@@ -1,8 +1,10 @@
 ---
-framework_version: 1.2.7
+framework_version: 1.2.8
 ---
 
 # Job Evaluation Framework
+
+> **Personal data:** this tracked file keeps its placeholders. This candidate's values are in `documents/profile/04-job-evaluation.md` (git-ignored): read both, and write personal data only there. See CLAUDE.md, "Personal Data Storage".
 
 <!-- SETUP: Skill match areas and career goals are personalized by running /setup -->
 
@@ -45,6 +47,10 @@ Read the posting's language requirements as stated for **the role itself** — n
 Judge the level comparison the same way you judge everything else in this framework: read both sides as written and reason about it, don't force either into a rigid scale — CEFR letters, LinkedIn-style buckets ("professional working proficiency"), and plain-English words ("conversational," "fluent," "native") all appear in the wild and don't map onto each other precisely. When genuinely unsure whether a stated bar exceeds the candidate's level, prefer FLAG over a silent PASS — the human is meant to be the tiebreaker, not the gate.
 
 **Worked example:** a candidate whose Languages table lists Spanish (Native) and English (B1/B2). A posting requiring "fluent Russian" → **FAIL**, Russian isn't declared at all. A posting requiring "fluent English" → **FLAG**, English is declared but "fluent" plausibly exceeds B1/B2 — score and draft the application, but tell the candidate this posting's bar may be a stretch and let them decide. A posting requiring "conversational English" or unspecified English → **PASS**, B1/B2 clears a "conversational" bar cleanly.
+
+## Korea Gate - Korean-market postings only
+
+For a posting in the Korean market (see `10-korea-market.md` "When this applies"), run the Korea gate in `10-korea-market.md` section 5 after the two gates above: 고용 형태, 경력 요건, 학력, 병역, 어학 점수 cutoff, 근무지. Also fill its compensation checklist and check its Korean red flags while scoring Behavioral/Culture Fit, and add its Korean research sources to the Company Research Checklist.
 
 ## Scoring Dimensions
 

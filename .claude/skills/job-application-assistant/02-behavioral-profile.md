@@ -1,8 +1,10 @@
 ---
-framework_version: 1.0.0
+framework_version: 1.0.1
 ---
 
 # Behavioral Profile
+
+> **Personal data:** this tracked file keeps its placeholders. This candidate's values are in `documents/profile/02-behavioral-profile.md` (git-ignored): read both, and write personal data only there. See CLAUDE.md, "Personal Data Storage".
 
 <!-- SETUP: This file is populated by running /setup -->
 <!-- You can use results from PI, DISC, Myers-Briggs, StrengthsFinder, or a self-assessment -->

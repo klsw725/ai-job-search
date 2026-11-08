@@ -1,8 +1,10 @@
 ---
-framework_version: 1.1.1
+framework_version: 1.1.2
 ---
 
 # Candidate Profile
+
+> **Personal data:** this tracked file keeps its placeholders. This candidate's values are in `documents/profile/01-candidate-profile.md` (git-ignored): read both, and write personal data only there. See CLAUDE.md, "Personal Data Storage".
 
 <!-- SETUP: This file is populated by running /setup -->
 <!-- After running /setup, all sections will be filled with your actual information -->

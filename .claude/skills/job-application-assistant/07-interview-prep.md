@@ -1,10 +1,14 @@
 ---
-framework_version: 1.0.0
+framework_version: 1.0.1
 ---
 
 # Interview Preparation Guide
 
+> **Personal data:** this tracked file keeps its placeholders. This candidate's values are in `documents/profile/07-interview-prep.md` (git-ignored): read both, and write personal data only there. See CLAUDE.md, "Personal Data Storage".
+
 <!-- SETUP: STAR examples are personalized by running /setup based on your actual experience -->
+
+**Korean-market interviews:** also prepare the items in `10-korea-market.md` sections 6-7 (전형 절차, 1분 자기소개, 이직 사유, 처우 협의, 레퍼런스 체크), and run the mock interview in Korean when the interview is in Korean.
 
 ## STAR Format
 

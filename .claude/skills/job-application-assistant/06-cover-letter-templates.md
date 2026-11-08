@@ -1,8 +1,24 @@
 ---
-framework_version: 1.0.2
+framework_version: 1.0.3
 ---
 
 # Cover Letter Templates and Tailoring Guide
+
+> **Personal data:** this tracked file keeps its placeholders. This candidate's values are in `documents/profile/06-cover-letter-templates.md` (git-ignored): read both, and write personal data only there. See CLAUDE.md, "Personal Data Storage".
+
+<!-- BEGIN ACTIVE-TEMPLATE (managed by /add-template - do not edit by hand) -->
+> **Active template override: `kr-letter`**
+>
+> A custom template is active. Where this block conflicts with the stock guidance below, this block wins. Structural advice below (tailoring, page-budget, cutting rules) still applies.
+>
+> - **Template skeleton:** `templates/cover_letters/kr-letter/template.typ` — use this as the structural reference instead of the stock template
+> - **Manifest:** `templates/cover_letters/kr-letter/TEMPLATE.md` — read this for style rules and known pitfalls before drafting
+> - **Source extension:** `.typ` (not `.tex` unless the template's own toolchain is LaTeX)
+> - **Compile command:** `typst compile <file>.typ <file>.pdf` (not the command named in the stock guidance below — `/apply`'s compile step must use this instead). Run it from the output directory. If it redirects to `build/`, the log is in `build/`, and `/apply`'s Step 5e cleanup must delete that `build/` folder too
+> - **Fonts:** Noto Sans KR (system font - must be installed; `Noto Sans CJK KR` in the Docker image; Apple SD Gothic Neo is the macOS fallback). No bundled fonts
+> - **Page limit:** exactly 1 page(s)
+> - **Output file:** `cover_letters/cover_<company>_<role>.typ`; copy any class/package/font files the template needs into the output directory, or reference them by relative path
+<!-- END ACTIVE-TEMPLATE -->
 
 ## Template: Custom cover.cls (XeLaTeX)
 

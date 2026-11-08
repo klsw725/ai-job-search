@@ -111,3 +111,5 @@ If Step 3 drafted new STAR answers the user approved for keeps, remind them thos
 5. **Write only to the application archive** — with one exception. The prep pack lands in the archive folder derived in Step 1; framework files are not edited, except appending user-approved STAR examples to `07-interview-prep.md` on explicit request.
 
    **The exception is `01-candidate-profile.md`.** Interview prep is where new facts surface most often: the user recalls a metric, corrects a scope, or fills in a STAR stub. When that happens, write the fact into the profile, as well as putting it in the prep pack. A fact recorded only in prep material reads as unsupported to a later drafting session and gets stripped from CVs as a fabrication. Prep files are not a substitute for the profile.
+
+   **Both writes go to the git-ignored overlays,** never to the tracked skill files: approved STAR examples to `documents/profile/07-interview-prep.md`, new profile facts to `documents/profile/01-candidate-profile.md` (CLAUDE.md, "Personal Data Storage"). Every mention of `07-interview-prep.md` or `01-candidate-profile.md` as a write target in this command means its overlay.

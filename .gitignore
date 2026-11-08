@@ -1,6 +1,8 @@
 # Dependencies
 node_modules
 bun.lock
+# The web UI's Docker image installs from this lockfile (--frozen-lockfile).
+!web/bun.lock
 
 # Python
 __pycache__/
@@ -83,11 +85,16 @@ documents/projects/**
 # candidate's weak points.
 documents/applications/**
 documents/postings/**
+# Personal profile overlays written by /setup (CLAUDE.md, "Personal Data Storage").
+documents/profile/**
 # Belt-and-braces, not the primary guard: nothing writes here. Prep packs land
 # in documents/applications/<company>_<role>/, covered above. Kept because
 # tools/security_guards.py pins it in REQUIRED_IGNORE_RULES.
 documents/interview/**
 !documents/**/.gitkeep
+
+# Private history of the personal files above (tools/private_data.sh).
+.private-data.git/
 
 # Personal job search tracking
 job_search_tracker.csv

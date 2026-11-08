@@ -10,7 +10,7 @@ You are resetting parts of the job search framework back to a blank state so the
 
 Check `$ARGUMENTS` for a scope keyword:
 
-- `profile` — clears candidate profile data from skill files only
+- `profile` — deletes the candidate profile in `documents/profile/` (and cleans legacy personal data out of tracked skill files, if any)
 - `documents` — deletes user-provided files from the `documents/` folder only
 - `all` — both of the above
 
@@ -18,9 +18,9 @@ If `$ARGUMENTS` is empty or does not contain a recognized scope keyword, ask:
 
 > **What would you like to reset?**
 >
-> - **`profile`** — Clears candidate data from the skill files (profile, behavioral, STAR examples, profile statements, personalized evaluation criteria, search queries). The framework structure, scoring framework, and writing rules are preserved. Use this to re-run `/setup` from scratch.
+> - **`profile`** — Deletes your profile in `documents/profile/` (profile, behavioral, STAR examples, profile statements, personalized evaluation criteria, search queries, master CV). The framework files are not changed. Use this to re-run `/setup` from scratch.
 >
-> - **`documents`** — Deletes all files you've placed in the `documents/` folder (CV PDFs, LinkedIn export, diplomas, references, project summaries, pasted job postings, past applications). The folder structure and `README.md` are preserved.
+> - **`documents`** — Deletes all files you've placed in the `documents/` folder (CV PDFs, LinkedIn export, diplomas, references, project summaries, pasted job postings, past applications). The folder structure and `README.md` are preserved, and so is your profile in `documents/profile/`.
 >
 > - **`all`** — Both of the above.
 >
@@ -35,6 +35,36 @@ Wait for the user's response before continuing.
 Before doing anything, show the user precisely what will be wiped.
 
 ### If scope includes `profile`:
+
+The profile lives in `documents/profile/` (CLAUDE.md, "Personal Data Storage"). List every entry in that folder - `candidate.md`, the `0N-*.md` overlays, `search-queries.md`, `master-cv.*` and anything else there - and present:
+
+```
+## Profile reset will delete (documents/profile/):
+
+- candidate.md
+- 01-candidate-profile.md
+- [every other entry, or "(empty - nothing to delete)"]
+
+Tracked framework files are not changed.
+```
+
+Then check the tracked files for **legacy personal data**: data an older `/setup` wrote into them before profiles moved to `documents/profile/`. A missing sentinel placeholder is a reliable sign of legacy data; a present one is **not** proof the file is clean, because a partial edit can add a real name or job history and leave the sentinel in place:
+
+| Tracked file | Sentinel that must be present |
+|---|---|
+| `CLAUDE.md` | `[YOUR_NAME]` |
+| `01-candidate-profile.md` | `[YOUR_EMAIL]` |
+| `02-behavioral-profile.md` | `[PROFILE_TYPE]` |
+| `04-job-evaluation.md` | `[YOUR_PRIMARY_SKILLS]` |
+| `05-cv-templates.md` | `[YOUR_PROFILE_STATEMENT_TEMPLATE_1]` and `[YOUR_EMAIL]` |
+| `06-cover-letter-templates.md` | `[YOUR_EMAIL]` |
+| `07-interview-prep.md` | `[PROJECT_NAME]` |
+| `job-scraper/search-queries.md` | `[YOUR_CITY]` |
+| `cv/main_example.tex` | `[your.email@example.com]` |
+
+Flag a file when its sentinel is missing. Also run `git diff --stat HEAD -- <file>` (and, if the repo has an `upstream` remote, compare with it) for each file in the table, and read any file that differs from the shipped version for names, contact details, employers or other candidate facts; flag it if you find any. Name each flagged file and why, and apply the legacy cleanup to those files only. If nothing is flagged, say "No legacy personal data found in tracked files (checked sentinels and diffs)" rather than claiming the files are certainly clean, and skip everything under **Legacy tracked-file cleanup** in this step and in Step 3.
+
+#### Legacy tracked-file cleanup (flagged files only)
 
 Read the current state of these files and report whether each has content or is already empty:
 
@@ -141,6 +171,18 @@ Wait for the user's response.
 ## Step 3: Execute the Reset
 
 ### Profile reset
+
+Delete every entry in `documents/profile/` and keep the folder itself. Run this only after the confirmation above. If `documents` or `documents/profile` is a symbolic link, stop and ask the user to replace it with a local folder, so nothing outside the repo is deleted:
+
+```sh
+if [ -L documents ] || [ -L documents/profile ]; then
+  echo "documents or documents/profile is a symbolic link - not deleting anything" >&2
+else
+  [ -d documents/profile ] && find documents/profile -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+fi
+```
+
+#### Legacy tracked-file cleanup (only files flagged in Step 1)
 
 Every skill file under `.claude/skills/job-application-assistant/` opens with a `---` frontmatter block carrying its `framework_version` marker. That marker is framework data, not candidate data: `tools/check_framework_version.py` fails a file without it, and `tools/check_upstream_updates.py` cannot compare the file against upstream. Never remove or rewrite it - the two full-file replacements below keep it and replace only what follows.
 
@@ -292,9 +334,9 @@ After the reset is complete, report:
 Then tell the user what to do next based on what was reset:
 
 **If profile was reset:**
-> The skill files are now blank. Run `/setup` to repopulate them. The command auto-detects any files in your `documents/` folder and offers to read from there; otherwise it walks you through a CV import or interactive interview.
+> Your profile in `documents/profile/` is deleted. Run `/setup` to rebuild it. The command auto-detects any files in your `documents/` folder and offers to read from there; otherwise it walks you through a CV import or interactive interview. If you keep a private backup (`tools/private_data.sh`), the previous profile is still in that history.
 >
-> Note that `CLAUDE.md` and `cv/main_example.tex` are outside the `profile` scope and still hold your personal data. If you are handing this fork over or making it public, clear them by hand.
+> Only if Step 1 flagged legacy data in `CLAUDE.md` or `cv/main_example.tex`: those two are not restored automatically and still hold personal data. If you are handing this fork over or making it public, clear them by hand.
 
 **If documents were reset:**
 > Your user documents are now cleared. The folder structure, `.gitkeep` placeholders, and `documents/README.md` are preserved. Add your career documents and run `/setup` to populate your profile.

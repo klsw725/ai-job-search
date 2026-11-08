@@ -1,8 +1,10 @@
 ---
-framework_version: 1.2.0
+framework_version: 1.2.1
 ---
 
 # Writing Style Guide
+
+> **Personal data:** this tracked file keeps its placeholders. This candidate's values are in `documents/profile/03-writing-style.md` (git-ignored): read both, and write personal data only there. See CLAUDE.md, "Personal Data Storage".
 
 ## Critical Rules
 
@@ -108,3 +110,4 @@ The cover letter is **not a CV repetition**. It should be forward-looking:
 - Default to the language of the job posting
 - Cover letters in the posting's language should feel natural, not translated
 - Slightly warmer, more personal tone may be acceptable in some languages
+- Korean documents: follow `10-korea-market.md` section 3 (합쇼체, 두괄식, 소제목, Korean cliché list) on top of every rule above

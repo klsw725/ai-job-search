@@ -1,0 +1,26 @@
+services:
+  web:
+    build:
+      context: .
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    image: ai-job-search-web
+    # Bound to 127.0.0.1 only: the UI runs Claude Code with tool access on
+    # this repo, so it must not be reachable from other machines.
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+    env_file:
+      - path: .env
+        required: false
+    # Lets ANTHROPIC_BASE_URL point at a proxy on this machine (Linux needs this
+    # mapping; Docker Desktop provides the name already).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./:/workspace
+      - claude-config:/home/bun/.claude
+    restart: unless-stopped
+
+volumes:
+  claude-config:

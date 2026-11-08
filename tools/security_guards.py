@@ -187,6 +187,10 @@ REQUIRED_IGNORE_RULES = [
     "documents/projects/**",
     "documents/applications/**",
     "documents/postings/**",
+    # Profile overlays: the candidate's actual profile, written by /setup.
+    "documents/profile/**",
+    # tools/private_data.sh keeps a full private history of all of the above.
+    ".private-data.git/",
     # Belt-and-braces, not the primary guard: nothing writes here.
     # /interview's prep packs land under documents/applications/**, above.
     "documents/interview/**",
@@ -226,6 +230,8 @@ ALLOWED_IGNORE_NEGATIONS = {
     "!cv/main_example.tex",
     "!cover_letters/cover_example.tex",
     "!documents/**/.gitkeep",
+    # Lockfile for the Docker image of the web UI; holds no personal data.
+    "!web/bun.lock",
 }
 
 # Hook commands the template legitimately ships, as "<Event>:<command>" strings.

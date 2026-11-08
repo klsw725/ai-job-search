@@ -533,6 +533,31 @@ class Apply(RankStateCase):
         self.assertEqual([r["key"] for r in out["ranked"]], ["c"])
         self.assertEqual(self.read_state()["b"]["language_note"], "requires fluent Polish")
 
+    def test_eligibility_fail_is_vetoed_and_flag_stays_ranked(self):
+        # A Korea Gate / Eligibility Gate / deal-breaker FAIL must keep a
+        # high-scoring posting off the shortlist, like location and language.
+        scores = {"technical": 90, "experience": 90, "behavioral": 90, "career": 90}
+        self.write_state({"a": entry(), "b": entry(), "c": entry(eligibility_note="stale")})
+        out = self.run_tool(
+            "apply",
+            "--results",
+            self.results(
+                [
+                    {"key": "a", "status": "scored", "scores": scores, "eligibility_gate": "FAIL",
+                     "eligibility_note": "계약직 (deal-breaker: 정규직 only)"},
+                    {"key": "b", "status": "scored", "scores": scores, "eligibility_gate": "FLAG",
+                     "eligibility_note": "병역필 required; status unknown"},
+                    {"key": "c", "status": "scored", "scores": scores},
+                ]
+            ),
+        )
+        self.assertEqual([r["key"] for r in out["vetoed"]], ["a"])
+        self.assertEqual(sorted(r["key"] for r in out["ranked"]), ["b", "c"])
+        state = self.read_state()
+        self.assertEqual(state["a"]["eligibility_note"], "계약직 (deal-breaker: 정규직 only)")
+        self.assertEqual(state["b"]["eligibility_gate"], "FLAG")
+        self.assertNotIn("eligibility_note", state["c"])
+
     def test_language_note_is_dropped_when_gate_passes(self):
         self.write_state({"a": entry(language_note="stale note from a prior run")})
         self.run_tool(

@@ -1,6 +1,6 @@
 # Documents Folder
 
-This folder holds your actual career documents. The `/setup` command reads everything here and uses it to populate the candidate skill files under `.claude/skills/job-application-assistant/`. It is safe to re-run `/setup` as you add new documents — it merges intelligently and will never overwrite existing content without asking you first.
+This folder holds your actual career documents. The `/setup` command reads everything here and writes your profile to `documents/profile/`, the git-ignored overlays of the candidate skill files under `.claude/skills/job-application-assistant/` (see CLAUDE.md, "Personal Data Storage"). It is safe to re-run `/setup` as you add new documents — it merges intelligently and will never overwrite existing content without asking you first.
 
 ---
 
@@ -21,8 +21,16 @@ documents/
 │       ├── cover_letter.tex     # The cover letter you submitted
 │       ├── cv_draft.tex         # The CV variant you submitted
 │       └── outcome.md           # Result + notes (fill in after hearing back)
+├── profile/                     # Written by /setup, not by you: your profile overlays (candidate.md,
+│                                #   01-/02-/04-/05-/07-*.md, search-queries.md, master-cv.*)
 └── README.md                    # This file
 ```
+
+---
+
+## profile/
+
+Your profile as `/setup` wrote it: one overlay per profile file, same file names as the tracked skill files, which keep only placeholders. Git ignores this folder, so the profile stays out of commits even on a public fork. `/expand` and `/interview` add to it, `/reset profile` clears it, and `tools/private_data.sh save` snapshots it (with the rest of your personal files) into a separate private history. You can edit these files by hand.
 
 ---
 

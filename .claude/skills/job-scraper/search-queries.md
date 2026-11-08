@@ -1,5 +1,7 @@
 # Search Queries for Job Scraper
 
+> **Personal data:** this tracked file keeps its placeholders. This candidate's values are in `documents/profile/search-queries.md` (git-ignored): that file is a full personalized copy of this one, so read it instead of this file when it exists, and write personal data only there. See CLAUDE.md, "Personal Data Storage".
+
 <!-- SETUP: Customize these queries based on your skills, target roles, and location -->
 
 ## Installed portal CLIs (primary for `/scrape`)

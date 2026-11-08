@@ -1,0 +1,7 @@
+# Only web/ is copied into the image; the repo is bind-mounted at runtime.
+*
+!web/package.json
+!web/bun.lock
+!web/tsconfig.json
+!web/src/**
+!web/docker-entrypoint.sh

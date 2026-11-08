@@ -1,5 +1,5 @@
 ---
-framework_version: 1.0.0
+framework_version: 1.0.1
 ---
 
 # Application Form Fields
@@ -23,6 +23,8 @@ Trigger it whenever a posting or portal asks for any of:
 **Every claim in a form field must already be defensible from the same sources the CV and cover letter are grounded against** — the union of `01-candidate-profile.md`, the master CV (`cv/main_example.tex`), and `CLAUDE.md`'s Candidate Profile section, with a claim grounded if ANY of the three supports it. The interviewer reads the form alongside the CV. A form field is not a place to introduce new claims, inflate scope, or fill space — it is a place to *select* from what is already true and arrange it for the question asked.
 
 All accuracy rules from `05-cv-templates.md` and `03-writing-style.md` apply unchanged.
+
+**Korean 문항형 자기소개서** is this file's most common case in Korea. Apply `10-korea-market.md` section 4 on top of everything here: 공백 포함 counting by default, 90-100% of the limit, 소제목 + 두괄식 per answer, all three counts reported.
 
 ## Field type: self-introduction paragraph
 

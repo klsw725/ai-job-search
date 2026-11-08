@@ -4,6 +4,8 @@ You are orchestrating a two-agent job application workflow. The job posting is p
 
 Follow these steps **exactly in order**. Do not skip steps.
 
+**Where the candidate's facts live:** the profile is in git-ignored overlays (CLAUDE.md, "Personal Data Storage"). Throughout this command, "`01-candidate-profile.md`" as a fact source or write target means `documents/profile/01-candidate-profile.md`, "the master CV (`cv/main_example.tex`)" means `documents/profile/master-cv.*`, and "CLAUDE.md's Candidate Profile section" means `documents/profile/candidate.md`. Give the reviewer agent these resolved paths: it reads files directly and does not get CLAUDE.md's import expanded.
+
 **Standing rule — write new facts back to the profile.** If the user confirms, corrects or supplies a fact that is not already in `01-candidate-profile.md` — a metric, a project detail, a skill, a scope correction — update that file in the same turn. Do not leave it living only in the conversation or in a draft.
 
 This is not bookkeeping. A fact that exists only in chat **will be treated as unsupported by a later session and stripped from drafts as a fabrication.** Anything absent from the sources does not exist as far as future drafting is concerned, and the loss is silent — a real achievement quietly disappears from every subsequent CV.
@@ -109,7 +111,7 @@ Also read the most recent existing CV and cover letter files for concrete struct
 *In both filenames below, `<company>_<role>` is derived by the **Subfolder naming** rule in `documents/README.md` — the same rule `/outcome` Step 1.4 uses for the archive folder, so a `/` or other path character in a company or role name can never split the filename across directories.*
 
 ### CV (`cv/main_<company>_<role><CV_EXT>`)
-- In the **CV language from the profile** (the `CV language:` line in CLAUDE.md's Identity section). When the profile does not set one, default to **English**. Never switch language per posting - the CV language is a profile-level choice, so all CVs stay consistent and reusable
+- In the **CV language from the profile** (the `CV language:` line in the profile's Identity section). When the profile does not set one, default to **English**. Never switch language per posting - the CV language is a profile-level choice, so all CVs stay consistent and reusable. **Exception:** a Korean-market posting (`10-korea-market.md`) follows that file's Language choice and document-set rules, including a separate `self_intro.txt` instead of a cover-letter PDF for 문항형 자기소개서
 - Follow the moderncv/banking format from `05-cv-templates.md`
 - Tailor the profile statement and experience bullets to the specific role
 - Reframe skills and achievements to match job requirements
@@ -156,12 +158,12 @@ After fresh research, return the findings in the cache schema under a heading `#
 
 ### 2. Read Reference Materials (content-critique only)
 Read these reference files — and only these — to ground your critique:
-- `.claude/skills/job-application-assistant/01-candidate-profile.md`
-- `.claude/skills/job-application-assistant/02-behavioral-profile.md` — use this specifically to check whether the cover letter's voice matches the candidate's natural register. A "Collaborator" PI profile, for example, should not be given a combative, solo-hero tone; a "Persuader" profile should not be given over-hedged, apologetic phrasing.
-- `.claude/skills/job-application-assistant/03-writing-style.md`
-- `.claude/skills/job-application-assistant/04-job-evaluation.md`
-- The master CV baseline template (`cv/main_example.tex`)
-- The workspace root `CLAUDE.md` file (specifically the Candidate Profile section)
+- `.claude/skills/job-application-assistant/01-candidate-profile.md` together with its overlay `documents/profile/01-candidate-profile.md`, which holds the candidate's actual facts
+- `.claude/skills/job-application-assistant/02-behavioral-profile.md` with its overlay `documents/profile/02-behavioral-profile.md` — use this specifically to check whether the cover letter's voice matches the candidate's natural register. A "Collaborator" PI profile, for example, should not be given a combative, solo-hero tone; a "Persuader" profile should not be given over-hedged, apologetic phrasing.
+- `.claude/skills/job-application-assistant/03-writing-style.md` (and `documents/profile/03-writing-style.md` if present)
+- `.claude/skills/job-application-assistant/04-job-evaluation.md` with its overlay `documents/profile/04-job-evaluation.md`
+- The master CV: `documents/profile/master-cv.*` (`cv/main_example.tex` is only the placeholder example)
+- The candidate profile summary `documents/profile/candidate.md` (what CLAUDE.md's Candidate Profile section imports)
 
 Do NOT read `05-cv-templates.md` or `06-cover-letter-templates.md` — those govern template structure the drafter already applied and are not needed for content critique.
 
@@ -239,6 +241,13 @@ After all edits are applied, the two files on disk are the final drafts.
 **Never skip this step.** The source files looking fine is not sufficient — page-break decisions are unpredictable and commonly produce broken layouts (orphaned job titles separated from their bullets, cover letters spilling to 2 pages, bullet fonts not matching body text). Compile both documents and visually verify the PDFs before presenting.
 
 ### 5a. Compile
+
+**Compile what the document set contains.** For a Korean-market posting, `10-korea-market.md` can change the document set in two independent ways; apply each only when its own condition holds:
+
+- **문항형 자기소개서** (section 1: the employer asks numbered questions instead of a free-form letter): the cover letter is replaced by a character-counted `self_intro.txt`. Every cover-letter command in Step 5 is skipped (there is no cover-letter PDF), the counts from section 4 replace the cover-letter checks, the reviewer in Step 3 is given `self_intro.txt` instead of a cover-letter draft, and Step 6b records `self_intro.txt` in `cover_letter_file`. The CV keeps its normal page budget.
+- **1-page 신입 CV** (section 2, only when the user asked for it): `--pages 1` replaces `--pages 2` for the CV and the reviewer is told the same. The cover letter, or `self_intro.txt`, is unaffected.
+
+The Step 6 report says which documents were produced and why. Everything below applies unchanged to the documents that do exist.
 
 Use `<CV_COMPILE>` and `<COVER_COMPILE>` resolved in Step 2 (the active template's declared compile command, or the stock defaults below if no custom template is active):
 
