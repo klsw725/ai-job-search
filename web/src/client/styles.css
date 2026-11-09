@@ -223,6 +223,9 @@ ol.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 .task-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .task-title-row .task-title { min-width: 0; overflow-wrap: anywhere; }
 .option.disabled { opacity: 0.6; cursor: not-allowed; }
+.login-steps ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; }
+.login-steps li { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.login-steps .row { width: 100%; }
 .option.risk-high.on { border-color: var(--danger); background: var(--danger-soft); }
 
 /* Buttons and icons */

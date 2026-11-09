@@ -15,9 +15,150 @@ export type Status = {
   fileAccess: "secure" | "insecure" | "blocked";
   permissionMode: WebMode;
   bypassAllowed: boolean;
+  connection: "env" | "account";
+  login: LoginStatus;
+  accountConflicts: string[];
+  envAuth: string | null;
+  envBaseUrl: string | null;
 };
 
-const AUTH_LABEL: Record<string, string> = { subscription: "구독 토큰", api_key: "API 키", auth_token: "게이트웨이 토큰", login: "로그인 세션" };
+type LoginStatus = {
+  supported: boolean;
+  loggedIn: boolean;
+  subscriptionType: string | null;
+  accessTokenExpiresAt: number | null;
+  refreshTokenExpiresAt: number | null;
+};
+
+const AUTH_LABEL: Record<string, string> = {
+  subscription: "구독 토큰",
+  api_key: "API 키",
+  auth_token: "게이트웨이 토큰",
+  login: "로그인 세션",
+  account: "내 Claude 계정",
+};
+
+const PLAN_LABEL: Record<string, string> = { max: "Max", pro: "Pro", team: "Team", enterprise: "Enterprise" };
+
+function daysLeft(at: number | null): number | null {
+  return at === null ? null : Math.ceil((at - Date.now()) / 86_400_000);
+}
+
+function ClaudeConnectionCard({ status, onDone }: { status: Status; onDone: () => void }) {
+  const { login } = status;
+  const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const renewIn = daysLeft(login.refreshTokenExpiresAt);
+  const blocked = status.accountConflicts.length > 0;
+
+  const run = (p: Promise<unknown>, done?: string) => {
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    p.then(() => {
+      if (done) setMsg(done);
+      onDone();
+    })
+      .catch((e: Error) => setErr(e.message))
+      .finally(() => setBusy(false));
+  };
+
+  const start = () => run(sendJSON<{ authorizeUrl: string }>("/api/claude-login/start", "POST").then((r) => setAuthorizeUrl(r.authorizeUrl)));
+  const complete = () =>
+    run(
+      sendJSON("/api/claude-login/complete", "POST", { code }).then(async () => {
+        setAuthorizeUrl(null);
+        setCode("");
+        if (status.connection !== "account" && !blocked) await sendJSON("/api/connection", "POST", { connection: "account" });
+      }),
+      "로그인했어요. 새로 시작하는 작업부터 내 Claude 계정으로 연결돼요.",
+    );
+  const choose = (connection: "env" | "account") => run(sendJSON("/api/connection", "POST", { connection }), "바꿨어요. 새로 시작하는 작업부터 적용돼요.");
+
+  return (
+    <Card title="Claude 연결">
+      <p className="muted">AI 작업이 Claude에 어떻게 연결할지 골라요. 바꾼 연결은 새로 시작하는 작업부터 적용돼요.</p>
+
+      <label className={`option ${status.connection === "account" ? "on" : ""} ${login.loggedIn && !blocked ? "" : "disabled"}`}>
+        <input type="radio" name="connection" checked={status.connection === "account"} disabled={!login.loggedIn || blocked || busy} onChange={() => choose("account")} />
+        <span>
+          <b>내 Claude 계정으로 직접 연결</b>
+          {login.loggedIn && <span className="chip st-applied">로그인됨{login.subscriptionType ? ` · ${PLAN_LABEL[login.subscriptionType] ?? login.subscriptionType}` : ""}</span>}
+          <span className="muted small option-desc">
+            Pro/Max 구독 계정으로 로그인해요. 로그인 정보는 Claude Code가 스스로 갱신하고, 프록시를 거치지 않아 웹 검색도 쓸 수 있어요.
+          </span>
+          {blocked && (
+            <span className="small option-desc warn-text">
+              다음 설정이 다른 연결을 지정하고 있어 쓸 수 없어요. 해당 항목을 지우면 쓸 수 있어요: {status.accountConflicts.join(", ")}
+            </span>
+          )}
+          {login.loggedIn && renewIn !== null && (
+            <span className={`small option-desc ${renewIn <= 3 ? "warn-text" : "muted"}`}>
+              {renewIn <= 0 ? "로그인이 만료됐어요. 다시 로그인해 주세요." : `${renewIn}일 뒤에 다시 로그인해야 해요.`}
+            </span>
+          )}
+        </span>
+      </label>
+
+      <label className={`option ${status.connection === "env" ? "on" : ""}`}>
+        <input type="radio" name="connection" checked={status.connection === "env"} disabled={busy} onChange={() => choose("env")} />
+        <span>
+          <b>.env 설정 사용</b>
+          <span className="muted small option-desc">
+            {status.envBaseUrl
+              ? `${status.envBaseUrl}을(를) 거쳐 연결해요. Meridian 같은 프록시를 거치면 웹 검색이 안 될 수 있어요.`
+              : status.envAuth
+                ? `${AUTH_LABEL[status.envAuth] ?? status.envAuth}(으)로 Anthropic에 바로 연결해요.`
+                : ".env에 인증 정보가 없어요."}
+          </span>
+        </span>
+      </label>
+
+      {!login.supported ? (
+        <div className="notice small">macOS에서 직접 실행하면 Claude Code가 로그인을 키체인에 보관해서 여기서 로그인할 수 없어요. Docker로 실행해 주세요.</div>
+      ) : authorizeUrl ? (
+        <div className="login-steps">
+          <ol>
+            <li>
+              <a className="btn primary" href={authorizeUrl} target="_blank" rel="noopener noreferrer">
+                Claude 로그인 페이지 열기
+              </a>
+              <span className="muted small"> 구독 계정으로 로그인하고 승인해 주세요.</span>
+            </li>
+            <li>
+              <span>화면에 나온 코드를 복사해 붙여넣어 주세요.</span>
+              <div className="row wrap">
+                <input className="grow" value={code} onChange={(e) => setCode(e.target.value)} placeholder="인증 코드 (또는 주소창의 전체 주소)" autoComplete="off" spellCheck={false} />
+                <button className="btn primary" disabled={!code.trim() || busy} onClick={complete}>
+                  {busy ? "확인하는 중…" : "로그인 완료"}
+                </button>
+                <button className="btn ghost" disabled={busy} onClick={() => setAuthorizeUrl(null)}>
+                  취소
+                </button>
+              </div>
+            </li>
+          </ol>
+        </div>
+      ) : (
+        <div className="row wrap">
+          <button className={`btn ${login.loggedIn ? "secondary" : "primary"}`} disabled={busy} onClick={start}>
+            {login.loggedIn ? "다시 로그인" : "Claude 계정으로 로그인"}
+          </button>
+          {login.loggedIn && (
+            <button className="btn danger" disabled={busy} onClick={() => run(sendJSON("/api/claude-login/logout", "POST"), "로그아웃했어요.")}>
+              로그아웃
+            </button>
+          )}
+        </div>
+      )}
+      {msg && <p className="ok small">{msg}</p>}
+      <ErrorBox error={err} />
+    </Card>
+  );
+}
 
 export type SetupIssue = { code: "auth" | "file-blocked" | "file-insecure" | "untrusted" | "no-pdf"; text: string };
 
@@ -317,7 +458,9 @@ export function Settings() {
             </div>
           </div>
 
-          {!s.auth && (
+          <ClaudeConnectionCard status={s} onDone={status.reload} />
+
+          {!s.auth && s.connection === "env" && (
             <Card title="AI에 연결하지 못했어요">
               <p>
                 저장소 폴더의 <code>.env</code> 파일에 <code>CLAUDE_CODE_OAUTH_TOKEN</code>(Pro/Max 구독), <code>ANTHROPIC_API_KEY</code>(API 키),{" "}

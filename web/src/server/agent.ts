@@ -198,6 +198,8 @@ export type SessionOptions = {
   history?: ChatEvent[];
   rules?: ProjectRules | null;
   mode?: WebMode;
+  // The Claude Code process environment; undefined inherits the server's.
+  env?: Record<string, string | undefined>;
   // False while input is not allowed (a data reset is running).
   mayWrite?: () => boolean;
   onProcessChange?: (session: ChatSession, exited: boolean) => void;
@@ -247,6 +249,7 @@ export class ChatSession {
         cwd: REPO_DIR,
         settingSources: ["user", "project", "local"],
         systemPrompt: { type: "preset", preset: "claude_code", append: WEB_APPEND },
+        ...(opts.env ? { env: opts.env } : {}),
         permissionMode: this.mode,
         // Only makes switching to bypass possible later; it enables nothing by itself.
         allowDangerouslySkipPermissions: bypassAllowed(),
@@ -510,6 +513,7 @@ export class SessionManager {
     private rules: () => Promise<ProjectRules | null>,
     private onListChanged: () => void = () => {},
     private defaultMode: () => Promise<WebMode> = async () => "default",
+    private sessionEnv: () => Promise<Record<string, string | undefined> | undefined> = async () => undefined,
   ) {
     // Idle sessions keep a Claude Code process alive. Close them after 30
     // minutes without activity; the transcript stays resumable from "past".
@@ -546,12 +550,14 @@ export class SessionManager {
     try {
       const rules = await this.rules();
       const mode = opts.mode ?? (await this.defaultMode());
+      const env = await this.sessionEnv();
       // The freeze may have started while the rules were read.
       if (this.frozen) throw new Error(FROZEN_MESSAGE);
       const s = new ChatSession(this.emit, (closed) => this.forget(closed), {
         ...opts,
         rules,
         mode,
+        env,
         mayWrite: () => !this.frozen,
         onProcessChange: this.processChanged,
       });

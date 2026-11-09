@@ -1,7 +1,7 @@
-import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { bypassAllowed, isWebMode, type WebMode } from "./modes.ts";
+import { accountConflicts, isConnection, loginStatus, type Connection } from "./claudeAuth.ts";
 import { REPO_DIR } from "./config.ts";
 import { csvToObjects } from "./csv.ts";
 import { fileAccessMode, readChecked, resolveInRepo } from "./security.ts";
@@ -148,7 +148,7 @@ async function claudeCodeTrusts(repo: string) {
 }
 
 const consentPath = () => join(configDir(), "ai-job-search-web.json");
-type Consent = { trustedRepos?: string[]; permissionModes?: Record<string, string> };
+type Consent = { trustedRepos?: string[]; permissionModes?: Record<string, string>; connection?: string };
 let consentWrite: Promise<void> = Promise.resolve();
 
 export async function isWorkspaceTrusted(repo = REPO_DIR) {
@@ -182,6 +182,17 @@ export async function readPermissionMode(repo = REPO_DIR): Promise<WebMode> {
   const saved = (await readJson<Consent>(consentPath()))?.permissionModes?.[repo];
   if (!isWebMode(saved) || (saved === "bypassPermissions" && !bypassAllowed())) return "default";
   return saved;
+}
+
+// How new tasks reach Claude: "env" uses .env as before (an API key, a token or
+// a proxy such as Meridian), "account" uses the Claude login made in Settings.
+export async function readConnection(): Promise<Connection> {
+  const saved = (await readJson<Consent>(consentPath()))?.connection;
+  return isConnection(saved) ? saved : "env";
+}
+
+export function saveConnection(connection: Connection): Promise<void> {
+  return updateConsent((consent) => ({ ...consent, connection }));
 }
 
 export function savePermissionMode(mode: WebMode, repo = REPO_DIR): Promise<void> {
@@ -224,21 +235,28 @@ export function displayBaseUrl(raw: string | undefined): string | null {
 export async function readStatus(repo = REPO_DIR) {
   const cvGuide = (await readText(".claude/skills/job-application-assistant/05-cv-templates.md", repo)) ?? "";
   const activeTemplate = /Active template override: `([^`]+)`/.exec(cvGuide)?.[1] ?? null;
-  const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(process.env.HOME ?? "", ".claude");
   const env = process.env;
-  const auth = env.CLAUDE_CODE_OAUTH_TOKEN
+  const connection = await readConnection();
+  const login = await loginStatus();
+  const envAuth = env.CLAUDE_CODE_OAUTH_TOKEN
     ? "subscription"
     : env.ANTHROPIC_API_KEY
       ? "api_key"
       : env.ANTHROPIC_AUTH_TOKEN
         ? "auth_token"
-        : existsSync(join(configDir, ".credentials.json"))
+        : login.loggedIn
           ? "login"
           : null;
+  const auth = connection === "account" ? (login.loggedIn ? "account" : null) : envAuth;
   return {
     repo,
     auth,
-    baseUrl: displayBaseUrl(env.ANTHROPIC_BASE_URL),
+    connection,
+    login,
+    accountConflicts: await accountConflicts(repo),
+    envAuth,
+    envBaseUrl: displayBaseUrl(env.ANTHROPIC_BASE_URL),
+    baseUrl: connection === "account" ? null : displayBaseUrl(env.ANTHROPIC_BASE_URL),
     fileAccess: fileAccessMode(),
     model: env.ANTHROPIC_MODEL || null,
     typst: Bun.which("typst") !== null,

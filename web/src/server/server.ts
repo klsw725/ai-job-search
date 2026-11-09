@@ -6,15 +6,18 @@ import { HOST, PORT, REPO_DIR, UPLOAD_LIMIT_BYTES, ZIP_LIMIT_BYTES } from "./con
 import { queueSend, resolveAttachments } from "./attachments.ts";
 import { buildZip, uniqueNames, type ZipEntry } from "./zip.ts";
 import { BYPASS_REFUSED, bypassAllowed, isWebMode } from "./modes.ts";
+import { LoginError, accountConflicts, completeLogin, connectionEnv, isConnection, loginStatus, logoutLocked, serializeAuth, startLogin } from "./claudeAuth.ts";
 import {
   isWorkspaceTrusted,
   listCommands,
   listFiles,
   PROFILE_DIR,
+  readConnection,
   readProfile,
   readPermissionMode,
   readProjectRules,
   readSeenJobs,
+  saveConnection,
   savePermissionMode,
   readStatus,
   readTracker,
@@ -110,7 +113,61 @@ const manager = new SessionManager(
   async () => ((await isWorkspaceTrusted()) ? readProjectRules() : null),
   () => publishSessions(true),
   () => readPermissionMode(),
+  sessionEnv,
 );
+
+// An "account" task must really run on the stored login: refuse to start one
+// without it, or while a settings file would route it somewhere else.
+async function sessionEnv() {
+  const connection = await readConnection();
+  if (connection === "account") {
+    if (!(await loginStatus()).loggedIn) throw new Error("Claude 계정 로그인이 없어요. 설정 > Claude 연결에서 다시 로그인하거나 .env 연결로 바꿔 주세요.");
+    const conflicts = await accountConflicts(REPO_DIR);
+    if (conflicts.length) throw new Error(`다음 설정이 다른 연결을 지정하고 있어 내 Claude 계정으로 연결할 수 없어요: ${conflicts.join(", ")}`);
+  }
+  return connectionEnv(connection);
+}
+
+async function claudeLogin(req: Request) {
+  const { code } = (await req.json().catch(() => ({}))) as { code?: unknown };
+  try {
+    const status = await completeLogin(code);
+    publishSessions(true);
+    return json(status);
+  } catch (e) {
+    if (e instanceof LoginError) return fail(400, e.message);
+    throw e;
+  }
+}
+
+async function setConnection(req: Request) {
+  const { connection } = (await req.json().catch(() => ({}))) as { connection?: unknown };
+  if (!isConnection(connection)) return fail(400, "알 수 없는 연결 방식입니다");
+  // Checked and saved in the same turn as logins and logouts, so a logout
+  // cannot slip between the check and the save.
+  return serializeAuth(async () => {
+    if (connection === "account") {
+      if (!(await loginStatus()).loggedIn) return fail(409, "먼저 Claude 계정으로 로그인해 주세요");
+      const conflicts = await accountConflicts(REPO_DIR);
+      if (conflicts.length) return fail(409, `다음 설정이 다른 연결을 지정하고 있어요: ${conflicts.join(", ")}`);
+    }
+    await saveConnection(connection);
+    return json({ connection });
+  });
+}
+
+function logoutAccount() {
+  return serializeAuth(async () => {
+    if ((await readConnection()) === "account") await saveConnection("env");
+    try {
+      await logoutLocked();
+    } catch (e) {
+      if (e instanceof LoginError) return fail(409, e.message);
+      return fail(500, `로그아웃하지 못했어요. 로그인 정보가 남아 있어요: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    return json({ ok: true });
+  });
+}
 
 async function setDefaultMode(req: Request) {
   const { mode } = (await req.json().catch(() => ({}))) as { mode?: unknown };
@@ -271,6 +328,10 @@ async function api(req: Request, path: string): Promise<Response> {
   if (method === "GET" && path === "/api/reset") return json(await resetter.preview());
   if (method === "POST" && path === "/api/reset") return reset(req);
   if (method === "POST" && path === "/api/permission-mode") return setDefaultMode(req);
+  if (method === "POST" && path === "/api/claude-login/start") return json(startLogin());
+  if (method === "POST" && path === "/api/claude-login/complete") return claudeLogin(req);
+  if (method === "POST" && path === "/api/claude-login/logout") return logoutAccount();
+  if (method === "POST" && path === "/api/connection") return setConnection(req);
   if (method === "POST" && path === "/api/trust") {
     await trustWorkspace();
     return json({ ok: true });

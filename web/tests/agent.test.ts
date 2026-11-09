@@ -219,6 +219,16 @@ describe("permission modes", () => {
     s.close();
   });
 
+  test("a session runs Claude Code with the environment its connection chose", async () => {
+    const m = new SessionManager(() => {}, async () => null, () => {}, async () => "default", async () => ({ HOME: "/home/bun" }));
+    await m.create();
+    expect(fakes.at(-1)!.options.env).toEqual({ HOME: "/home/bun" });
+    m.closeAll();
+    const plain = new ChatSession(() => {}, () => {});
+    expect("env" in fakes.at(-1)!.options).toBe(false);
+    plain.close();
+  });
+
   test("new sessions take the saved default mode", async () => {
     const m = new SessionManager(() => {}, async () => null, () => {}, async () => "auto");
     const s = await m.create();
