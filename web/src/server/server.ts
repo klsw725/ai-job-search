@@ -1,11 +1,13 @@
 import { basename, extname, join } from "node:path";
 import type { ServerWebSocket } from "bun";
-import { SessionManager, type ChatSession, type LiveEvent } from "./agent.ts";
+import { FROZEN_MESSAGE, SessionManager, type ChatSession, type LiveEvent } from "./agent.ts";
+import { createReset } from "./reset.ts";
 import { HOST, PORT, REPO_DIR, UPLOAD_LIMIT_BYTES } from "./config.ts";
 import {
   isWorkspaceTrusted,
   listCommands,
   listFiles,
+  PROFILE_DIR,
   readProfile,
   readProjectRules,
   readSeenJobs,
@@ -13,7 +15,7 @@ import {
   readTracker,
   trustWorkspace,
 } from "./data.ts";
-import { fileAccessMode, hostAllowed, originAllowed, readChecked, resolveReadable, safeFileName, writeUpload } from "./security.ts";
+import { clearFolder, fileAccessMode, hostAllowed, listFolderEntries, originAllowed, readChecked, resolveReadable, safeFileName, writeUpload } from "./security.ts";
 
 type WsData = { subs: Set<string> };
 
@@ -65,15 +67,18 @@ async function buildClient() {
 const assets = await buildClient();
 
 let server: ReturnType<typeof Bun.serve<WsData, string>>;
-const publishSessions = () => server?.publish("sessions", JSON.stringify({ t: "sessions" }));
+// `settled` marks a task going idle or closing: the point where it may have
+// written files, so pages refetch their data only then.
+const publishSessions = (settled = false) => server?.publish("sessions", JSON.stringify({ t: "sessions", settled }));
 
 const manager = new SessionManager(
   (session: ChatSession, ev: LiveEvent) => {
     server?.publish(`s:${session.id}`, JSON.stringify({ t: "event", id: session.id, ev }));
-    if (ev.kind === "state" || ev.kind === "permission" || ev.kind === "question" || ev.kind === "resolved") publishSessions();
+    if (ev.kind === "state") publishSessions(ev.state !== "running");
+    else if (ev.kind === "permission" || ev.kind === "question" || ev.kind === "resolved") publishSessions();
   },
   async () => ((await isWorkspaceTrusted()) ? readProjectRules() : null),
-  publishSessions,
+  () => publishSessions(true),
 );
 
 function guard(req: Request): Response | null {
@@ -127,11 +132,39 @@ async function upload(req: Request) {
 }
 
 async function createSession(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as { resume?: string; prompt?: string };
-  const session = body.resume ? await manager.resume(body.resume) : await manager.create();
-  if (body.prompt?.trim()) session.send(body.prompt.trim());
+  if (manager.isFrozen) return fail(409, FROZEN_MESSAGE);
+  const body = (await req.json().catch(() => ({}))) as { resume?: string; prompt?: string; title?: unknown; kind?: unknown };
+  const title = typeof body.title === "string" && body.title.trim() ? body.title.trim().slice(0, 80) : undefined;
+  const kind = typeof body.kind === "string" && /^[a-z][a-z-]{0,23}$/.test(body.kind) ? body.kind : undefined;
+  if (manager.isFrozen) return fail(409, FROZEN_MESSAGE);
+  const session = body.resume ? await manager.resume(body.resume) : await manager.create({ title, kind });
+  if (body.prompt?.trim()) {
+    if (manager.isFrozen) return fail(409, FROZEN_MESSAGE);
+    session.send(body.prompt.trim());
+  }
   publishSessions();
   return json(session.summary());
+}
+
+const PROFILE_PARTS = PROFILE_DIR.split("/");
+
+// Deletes test leftovers: the profile folder's contents and this checkout's
+// Claude Code transcripts. The same Host/Origin guard as every API applies;
+// reset.ts requires the typed confirmation and the inventory the user saw.
+const resetter = createReset({
+  sessions: manager,
+  listProfile: () => listFolderEntries(PROFILE_PARTS),
+  clearProfile: () => clearFolder(PROFILE_PARTS),
+});
+
+async function reset(req: Request) {
+  const body = (await req.json().catch(() => ({}))) as Parameters<typeof resetter.run>[0];
+  try {
+    const { status, body: out } = await resetter.run(body && typeof body === "object" ? body : {});
+    return json(out, status);
+  } finally {
+    publishSessions(true);
+  }
 }
 
 async function api(req: Request, path: string): Promise<Response> {
@@ -144,11 +177,16 @@ async function api(req: Request, path: string): Promise<Response> {
   if (method === "GET" && path === "/api/profile") return json(await readProfile());
   if (method === "GET" && path === "/api/commands") return json(await listCommands());
   if (method === "POST" && path === "/api/upload") return upload(req);
+  if (method === "GET" && path === "/api/reset") return json(await resetter.preview());
+  if (method === "POST" && path === "/api/reset") return reset(req);
   if (method === "POST" && path === "/api/trust") {
     await trustWorkspace();
     return json({ ok: true });
   }
-  if (method === "GET" && path === "/api/sessions") return json({ active: manager.active(), past: await manager.past() });
+  if (method === "GET" && path === "/api/sessions") {
+    const withPast = new URL(req.url).searchParams.get("past") !== "0";
+    return json({ active: manager.active(), past: withPast ? await manager.past() : [] });
+  }
   if (method === "POST" && path === "/api/sessions") return createSession(req);
   const del = /^\/api\/sessions\/([\w-]+)$/.exec(path);
   if (method === "DELETE" && del) {

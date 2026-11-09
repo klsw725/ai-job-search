@@ -1,126 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { live, sendJSON, useFetch, type ChatEvent, type PastSession, type RetryInfo, type SessionState, type SessionSummary } from "../api.ts";
+import { useEffect, useRef, useState } from "react";
+import { live, sendJSON, useFetch, type ChatEvent, type SessionState, type SessionSummary } from "../api.ts";
+import { COMMAND_LABEL } from "../labels.ts";
+import { PermissionCard, QuestionCard, ResultLine, RetryNotice, ToolList, useResolved, useSession, useSessions, useToolResults } from "../session.tsx";
 import { ErrorBox, Markdown, formatTime } from "../ui.tsx";
 
-type Question = Extract<ChatEvent, { kind: "question" }>["questions"][number];
 type Command = { name: string; description: string };
 
-function useSessions() {
-  const { data, reload } = useFetch<{ active: SessionSummary[]; past: PastSession[] }>("/api/sessions");
-  useEffect(() => live.listen((m) => m.t === "sessions" && reload()), [reload]);
-  return data ?? { active: [], past: [] };
-}
-
-function useSession(id: string | null) {
-  const [events, setEvents] = useState<ChatEvent[]>([]);
-  const [state, setState] = useState<SessionState | null>(null);
-  const [retry, setRetry] = useState<RetryInfo | null>(null);
-  const [draft, setDraft] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setEvents([]);
-    setDraft("");
-    setState(null);
-    setRetry(null);
-    setError(null);
-    if (!id) return;
-    const off = live.listen((m) => {
-      if (m.t === "error" && m.id === id) setError(m.text);
-      if (m.t === "snapshot" && m.id === id) {
-        setEvents(m.events);
-        setState(m.session.state);
-        setRetry(m.session.retry);
-        setDraft("");
-      }
-      if (m.t === "event" && m.id === id) {
-        const ev = m.ev;
-        if (ev.kind === "delta") setDraft((d) => d + ev.text);
-        else if (ev.kind === "retry") setRetry(ev.retry);
-        else if (ev.kind === "state") {
-          setState(ev.state);
-          if (ev.state !== "running") {
-            setDraft("");
-            setRetry(null);
-          }
-        } else {
-          if (ev.kind === "assistant" && !ev.sub) setDraft("");
-          setEvents((list) => [...list, ev]);
-        }
-      }
-    });
-    live.subscribe(id);
-    return () => {
-      off();
-      live.unsubscribe(id);
-    };
-  }, [id]);
-
-  return { events, state, retry, draft, error };
-}
-
-function QuestionForm({ questions, onSubmit }: { questions: Question[]; onSubmit: (answers: Record<string, string>) => void }) {
-  const [picked, setPicked] = useState<Record<number, string[]>>({});
-  const [other, setOther] = useState<Record<number, string>>({});
-  const toggle = (qi: number, label: string, multi: boolean) =>
-    setPicked((p) => {
-      const cur = p[qi] ?? [];
-      return { ...p, [qi]: multi ? (cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label]) : [label] };
-    });
-  const answers = Object.fromEntries(
-    questions.map((q, qi) => [q.question, [...(picked[qi] ?? []), other[qi]?.trim()].filter(Boolean).join(", ")]),
-  );
-  const complete = questions.every((q) => answers[q.question]);
-  return (
-    <div className="stack">
-      {questions.map((q, qi) => (
-        <fieldset key={qi}>
-          <legend>
-            <span className="chip">{q.header}</span> {q.question}
-          </legend>
-          {q.options.map((o) => (
-            <label key={o.label} className="option">
-              <input
-                type={q.multiSelect ? "checkbox" : "radio"}
-                name={`q${qi}`}
-                checked={(picked[qi] ?? []).includes(o.label)}
-                onChange={() => toggle(qi, o.label, q.multiSelect)}
-              />
-              <span>
-                <b>{o.label}</b>
-                {o.description && <span className="muted"> — {o.description}</span>}
-              </span>
-            </label>
-          ))}
-          <input placeholder="직접 입력 (선택)" value={other[qi] ?? ""} onChange={(e) => setOther((o) => ({ ...o, [qi]: e.target.value }))} />
-        </fieldset>
-      ))}
-      <button className="btn primary" disabled={!complete} onClick={() => onSubmit(answers)}>
-        답변 보내기
-      </button>
-    </div>
-  );
-}
-
-const OUTCOME_LABEL: Record<string, string> = {
-  allowed: "허용함",
-  always: "이 세션에서 항상 허용",
-  denied: "거부함",
-  answered: "답변함",
-  cancelled: "취소됨",
-};
-
 function EventList({ sessionId, events, draft }: { sessionId: string; events: ChatEvent[]; draft: string }) {
-  const results = useMemo(() => {
-    const map = new Map<string, Extract<ChatEvent, { kind: "tool_result" }>>();
-    for (const e of events) if (e.kind === "tool_result") map.set(e.toolUseId, e);
-    return map;
-  }, [events]);
-  const resolved = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const e of events) if (e.kind === "resolved") map.set(e.requestId, e.outcome);
-    return map;
-  }, [events]);
+  const results = useToolResults(events);
+  const resolved = useResolved(events);
 
   return (
     <>
@@ -131,70 +19,17 @@ function EventList({ sessionId, events, draft }: { sessionId: string; events: Ch
           case "assistant":
             return (
               <div key={i} className={e.sub ? "msg sub" : "msg assistant"}>
-                {e.sub && <div className="muted small">하위 에이전트</div>}
+                {e.sub && <div className="muted small">보조 AI</div>}
                 {e.text && <Markdown text={e.text} />}
-                {e.tools.map((t) => {
-                  const r = results.get(t.id);
-                  return (
-                    <details key={t.id} className={`tool ${r?.isError ? "tool-error" : ""}`}>
-                      <summary>
-                        🔧 {t.name} {r ? (r.isError ? "· 오류" : "· 완료") : "· 실행 중"}
-                      </summary>
-                      <pre className="pre">{t.input}</pre>
-                      {r && <pre className="pre result">{r.text}</pre>}
-                    </details>
-                  );
-                })}
+                <ToolList tools={e.tools} results={results} />
               </div>
             );
-          case "permission": {
-            const outcome = resolved.get(e.requestId);
-            return (
-              <div key={i} className={`msg card-inline ${outcome ? "" : "attention"}`}>
-                <div>
-                  <b>권한 요청: {e.toolName}</b>
-                  {e.reason && <span className="muted"> — {e.reason}</span>}
-                </div>
-                <pre className="pre">{e.input}</pre>
-                {outcome ? (
-                  <div className="muted">{OUTCOME_LABEL[outcome] ?? outcome}</div>
-                ) : (
-                  <div className="row">
-                    <button className="btn primary" onClick={() => live.send({ t: "permission", id: sessionId, requestId: e.requestId, allow: true })}>허용</button>
-                    {e.canAlways && (
-                      <button className="btn secondary" onClick={() => live.send({ t: "permission", id: sessionId, requestId: e.requestId, allow: true, always: true })}>
-                        이 세션에서 항상 허용
-                      </button>
-                    )}
-                    <button className="btn danger" onClick={() => live.send({ t: "permission", id: sessionId, requestId: e.requestId, allow: false })}>거부</button>
-                  </div>
-                )}
-              </div>
-            );
-          }
-          case "question": {
-            const outcome = resolved.get(e.requestId);
-            return (
-              <div key={i} className={`msg card-inline ${outcome ? "" : "attention"}`}>
-                <b>질문</b>
-                {outcome ? (
-                  <div className="muted">
-                    {e.questions.map((q) => q.question).join(" / ")} — {OUTCOME_LABEL[outcome] ?? outcome}
-                  </div>
-                ) : (
-                  <QuestionForm questions={e.questions} onSubmit={(answers) => live.send({ t: "answer", id: sessionId, requestId: e.requestId, answers })} />
-                )}
-              </div>
-            );
-          }
+          case "permission":
+            return <PermissionCard key={i} sessionId={sessionId} event={e} outcome={resolved.get(e.requestId)} />;
+          case "question":
+            return <QuestionCard key={i} sessionId={sessionId} event={e} outcome={resolved.get(e.requestId)} />;
           case "result":
-            return (
-              <div key={i} className={`result-line ${e.ok ? "" : "error-inline"}`}>
-                {e.ok ? "완료" : e.text ? `중단/오류: ${e.text}` : "오류"}
-                {e.durationMs !== undefined && ` · ${(e.durationMs / 1000).toFixed(1)}초`}
-                {e.costUsd !== undefined && e.costUsd > 0 && ` · 세션 누적 약 $${e.costUsd.toFixed(2)}`}
-              </div>
-            );
+            return <ResultLine key={i} event={e} />;
           case "error":
             return <div key={i} className="error-box">{e.text}</div>;
           default:
@@ -210,8 +45,14 @@ function EventList({ sessionId, events, draft }: { sessionId: string; events: Ch
   );
 }
 
-function Composer({ sessionId, state, commands }: { sessionId: string | null; state: SessionState | null; commands: Command[] }) {
-  const [text, setText] = useState("");
+const SUGGESTIONS = [
+  "내 프로필을 보고 어떤 직무가 잘 맞을지 추천해 줘",
+  "이 공고가 나랑 맞는지 봐 줘: ",
+  "이번 주에 챙겨야 할 지원 일정을 정리해 줘",
+  "최근 만든 커버레터를 더 간결하게 다듬어 줘",
+];
+
+function Composer({ sessionId, state, commands, text, setText }: { sessionId: string | null; state: SessionState | null; commands: Command[]; text: string; setText: (t: string) => void }) {
   const [err, setErr] = useState<string | null>(null);
   const hints = text.startsWith("/") && !text.includes(" ") ? commands.filter((c) => `/${c.name}`.startsWith(text)) : [];
 
@@ -237,7 +78,8 @@ function Composer({ sessionId, state, commands }: { sessionId: string | null; st
         <ul className="hints">
           {hints.map((c) => (
             <li key={c.name} onClick={() => setText(`/${c.name} `)}>
-              <b>/{c.name}</b> <span className="muted">{c.description}</span>
+              <b>{COMMAND_LABEL[c.name]?.label ?? c.name}</b> <span className="muted small">/{c.name}</span>
+              <div className="muted small">{COMMAND_LABEL[c.name]?.description ?? c.description}</div>
             </li>
           ))}
         </ul>
@@ -247,7 +89,7 @@ function Composer({ sessionId, state, commands }: { sessionId: string | null; st
         <textarea
           rows={3}
           value={text}
-          placeholder="메시지 또는 /명령 (Enter 전송, Shift+Enter 줄바꿈)"
+          placeholder="AI에게 부탁할 일을 적어 주세요 (Enter 보내기 · Shift+Enter 줄바꿈 · / 를 입력하면 기능 목록)"
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -262,7 +104,7 @@ function Composer({ sessionId, state, commands }: { sessionId: string | null; st
           </button>
           {state === "running" && sessionId && (
             <button className="btn danger" onClick={() => live.send({ t: "interrupt", id: sessionId })}>
-              중단
+              멈추기
             </button>
           )}
         </div>
@@ -271,7 +113,7 @@ function Composer({ sessionId, state, commands }: { sessionId: string | null; st
   );
 }
 
-const STATE_LABEL: Record<SessionState, string> = { idle: "대기", running: "실행 중", closed: "종료" };
+const STATE_LABEL: Record<SessionState, string> = { idle: "대기 중", running: "진행 중", closed: "종료됨" };
 
 export function Chat({ sessionId }: { sessionId: string | null }) {
   const sessions = useSessions();
@@ -280,9 +122,15 @@ export function Chat({ sessionId }: { sessionId: string | null }) {
   const bottom = useRef<HTMLDivElement>(null);
   const [resumeErr, setResumeErr] = useState<string | null>(null);
   const [showList, setShowList] = useState(false);
+  const [text, setText] = useState("");
   useEffect(() => setShowList(false), [sessionId]);
+  useEffect(() => setText(""), [sessionId]);
 
-  useEffect(() => bottom.current?.scrollIntoView({ block: "end" }), [events.length, draft]);
+  // Block body on purpose: newer Chrome returns a Promise from scrollIntoView(),
+  // and React would call a returned value as the effect's cleanup and crash.
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ block: "end" });
+  }, [events.length, draft]);
 
   const resume = async (sdkSessionId: string) => {
     try {
@@ -301,17 +149,17 @@ export function Chat({ sessionId }: { sessionId: string | null }) {
         </button>
         <a className="btn primary block" href="#/chat" onClick={() => setShowList(false)}>+ 새 대화</a>
         <h3>진행 중</h3>
-        {sessions.active.length === 0 && <p className="muted small">없음</p>}
+        {sessions.active.length === 0 && <p className="muted small">없어요</p>}
         {sessions.active.map((s) => (
           <a key={s.id} href={`#/chat/${s.id}`} className={`session ${s.id === sessionId ? "active" : ""}`} onClick={() => setShowList(false)}>
             <span>{s.title}</span>
             <span className="small">
               <span className={`dot ${s.state}`} /> {STATE_LABEL[s.state]}
-              {s.pending > 0 && <span className="chip warn">응답 필요 {s.pending}</span>}
+              {s.pending > 0 && <span className="chip warn">답변 필요 {s.pending}</span>}
             </span>
           </a>
         ))}
-        <h3>이전 대화</h3>
+        <h3>지난 대화</h3>
         <ErrorBox error={resumeErr} />
         {sessions.past.map((p) => (
           <button
@@ -335,36 +183,34 @@ export function Chat({ sessionId }: { sessionId: string | null }) {
           {sessionId && state && state !== "closed" && (
             <button
               className="btn secondary"
-              title="Claude Code 프로세스를 끝냅니다. 기록은 '이전 대화'에서 이어서 할 수 있습니다."
+              title="AI 작업을 끝냅니다. 기록은 '지난 대화'에서 이어서 할 수 있어요."
               onClick={() => {
                 void sendJSON(`/api/sessions/${sessionId}`, "DELETE").then(() => (location.hash = "#/chat"));
               }}
             >
-              대화 종료
+              대화 끝내기
             </button>
           )}
         </div>
         <div className="messages">
           {!sessionId && (
             <div className="empty">
-              <h2>무엇을 할까요?</h2>
-              <p className="muted">/setup, /apply &lt;공고 URL&gt;, /interview, /outcome 같은 명령이나 일반 질문을 입력하세요.</p>
+              <h2>무엇을 도와드릴까요?</h2>
+              <p className="muted">궁금한 점이나 부탁할 일을 편하게 적어 주세요.</p>
+              <div className="suggestions">
+                {SUGGESTIONS.map((s) => (
+                  <button key={s} className="suggestion" onClick={() => setText(s)}>{s}</button>
+                ))}
+              </div>
             </div>
           )}
           <ErrorBox error={error} />
           {sessionId && <EventList sessionId={sessionId} events={events} draft={draft} />}
-          {state === "running" && retry && (
-            <div className="error-box small">
-              API 요청 실패, 재시도 중 ({retry.attempt}/{retry.maxRetries})
-              {retry.status !== null && ` · HTTP ${retry.status}`} · {retry.error} · {Math.round(retry.delayMs / 1000)}초 뒤 다시 시도
-              {(retry.status === 401 || retry.status === 403) && "\n인증 정보나 ANTHROPIC_BASE_URL 설정을 확인하세요."}
-              {retry.status === 404 && "\nANTHROPIC_BASE_URL 주소가 맞는지 확인하세요."}
-            </div>
-          )}
-          {state === "running" && !draft && !retry && <div className="muted small typing">작업 중…</div>}
+          {state === "running" && retry && <RetryNotice retry={retry} />}
+          {state === "running" && !draft && !retry && <div className="muted small typing"><span className="spinner" /> 작업 중…</div>}
           <div ref={bottom} />
         </div>
-        <Composer sessionId={sessionId} state={state} commands={commands} />
+        <Composer sessionId={sessionId} state={state} commands={commands} text={text} setText={setText} />
       </section>
     </div>
   );

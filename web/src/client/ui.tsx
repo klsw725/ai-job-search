@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { runCommand } from "./api.ts";
+import { STATUS_LABEL, commandLabel } from "./labels.ts";
 import { renderMarkdown } from "./markdown.ts";
 
 export function Markdown({ text }: { text: string }) {
@@ -24,7 +25,21 @@ export function ErrorBox({ error }: { error: string | null }) {
   return error ? <div className="error-box">{error}</div> : null;
 }
 
-export function CommandButton({ prompt, label, kind = "secondary", disabled }: { prompt: string; label?: string; kind?: "primary" | "secondary"; disabled?: boolean }) {
+export function CommandButton({
+  prompt,
+  label,
+  task,
+  hint,
+  kind = "secondary",
+  disabled,
+}: {
+  prompt: string;
+  label: string;
+  task?: string;
+  hint?: string;
+  kind?: "primary" | "secondary";
+  disabled?: boolean;
+}) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   return (
@@ -32,39 +47,21 @@ export function CommandButton({ prompt, label, kind = "secondary", disabled }: {
       <button
         className={`btn ${kind}`}
         disabled={busy || disabled}
-        title={prompt}
+        title={hint}
         onClick={() => {
           setBusy(true);
-          runCommand(prompt)
+          setErr(null);
+          runCommand(prompt, { title: task ?? commandLabel(prompt) ?? label })
             .catch((e: Error) => setErr(e.message))
             .finally(() => setBusy(false));
         }}
       >
-        {label ?? prompt}
+        {label}
       </button>
       {err && <span className="error-inline">{err}</span>}
     </>
   );
 }
-
-const STATUS_LABEL: Record<string, string> = {
-  drafted: "작성됨",
-  applied: "지원함",
-  interview: "면접",
-  offer: "오퍼",
-  hired: "합격",
-  rejected: "불합격",
-  no_response: "무응답",
-  "no response": "무응답",
-  offer_declined: "오퍼 거절",
-  "offer declined": "오퍼 거절",
-  withdrawn: "지원 철회",
-  new: "신규",
-  ranked: "평가됨",
-  expired: "마감",
-  unreachable: "접근 불가",
-  skipped: "제외",
-};
 
 export function StatusChip({ status }: { status: string | undefined }) {
   const s = (status ?? "").trim();

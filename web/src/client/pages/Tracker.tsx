@@ -12,8 +12,8 @@ function pdfFor(source: string | undefined, files: Set<string>): string | null {
 }
 
 export function Tracker() {
-  const { data, error, reload } = useFetch<{ exists: boolean; header: string[]; rows: Row[] }>("/api/tracker");
-  const files = useFetch<FileEntry[]>("/api/files");
+  const { data, error, reload } = useFetch<{ exists: boolean; header: string[]; rows: Row[] }>("/api/tracker", { live: true });
+  const files = useFetch<FileEntry[]>("/api/files", { live: true });
   const [showClosed, setShowClosed] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
   const fileSet = new Set((files.data ?? []).map((f) => f.path));
@@ -22,23 +22,25 @@ export function Tracker() {
 
   return (
     <div className="stack">
-      <h1>지원 현황</h1>
+      <h1>내 지원</h1>
       <ErrorBox error={error} />
       <Card
         title={`지원 ${data?.rows.length ?? 0}건`}
         actions={
           <>
             <label className="row small">
-              <input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} /> 종료된 지원 포함
+              <input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} /> 끝난 지원도 보기
             </label>
-            <CommandButton prompt="/outcome" label="결과 기록" />
-            <CommandButton prompt="/outcome followup" label="후속 연락" />
+            <CommandButton prompt="/outcome" label="결과 기록하기" hint="서류 결과, 면접, 불합격 같은 소식을 기록해요" />
+            <CommandButton prompt="/outcome followup" label="후속 연락 메일 쓰기" hint="답이 없는 지원에 보낼 확인 메일 초안을 써요" />
             <button className="btn secondary" onClick={reload}>새로고침</button>
           </>
         }
       >
         {data && !data.exists ? (
-          <p className="muted">job_search_tracker.csv가 아직 없습니다. /apply로 첫 지원서를 만들면 생깁니다.</p>
+          <p className="muted">
+            아직 지원 기록이 없어요. <a href="#/">홈</a>에서 공고 링크를 넣어 첫 지원서를 만들면 여기에 쌓여요.
+          </p>
         ) : (
           <table>
             <thead>
@@ -67,7 +69,7 @@ export function Tracker() {
                       <td>{r.fit_rating}</td>
                       <td><Deadline date={r.deadline} /></td>
                       <td onClick={(e) => e.stopPropagation()}>
-                        {cv && <a href={fileUrl(cv)} target="_blank" rel="noopener noreferrer">CV</a>}{" "}
+                        {cv && <a href={fileUrl(cv)} target="_blank" rel="noopener noreferrer">이력서</a>}{" "}
                         {cover && <a href={fileUrl(cover)} target="_blank" rel="noopener noreferrer">커버레터</a>}
                       </td>
                     </tr>
@@ -78,11 +80,11 @@ export function Tracker() {
                             {r.notes && <div><b>메모</b> {r.notes}</div>}
                             {r.contact_person && <div><b>담당자</b> {r.contact_person}</div>}
                             {r.channel && <div><b>지원 경로</b> {r.channel}</div>}
-                            {source && <div><b>공고</b> <a href={source} target="_blank" rel="noopener noreferrer">{source}</a></div>}
+                            {source && <div><b>공고 원문</b> <a href={source} target="_blank" rel="noopener noreferrer">{source}</a></div>}
                             <div className="row wrap">
-                              <CommandButton prompt={`/outcome ${r.company} ${r.role}`} label="결과 기록" />
-                              <CommandButton prompt={`/interview ${r.company} ${r.role}`} label="면접 준비" />
-                              <CommandButton prompt={`/outcome followup ${r.company} ${r.role}`} label="후속 메일 초안" />
+                              <CommandButton prompt={`/outcome ${r.company} ${r.role}`} label="결과 기록하기" task={`결과 기록 · ${r.company} / ${r.role}`} />
+                              <CommandButton prompt={`/interview ${r.company} ${r.role}`} label="면접 준비" task={`면접 준비 · ${r.company} / ${r.role}`} />
+                              <CommandButton prompt={`/outcome followup ${r.company} ${r.role}`} label="후속 연락 메일 쓰기" task={`후속 연락 메일 · ${r.company} / ${r.role}`} />
                             </div>
                           </div>
                         </td>

@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ChatEvent, LiveEvent, RetryInfo, SessionState } from "../server/agent.ts";
+import { commandLabel } from "./labels.ts";
+import { panel } from "./panel.ts";
 
 export type { ChatEvent, LiveEvent, RetryInfo, SessionState };
 
@@ -7,6 +9,7 @@ export type SessionSummary = {
   id: string;
   sdkSessionId: string | null;
   title: string;
+  kind: string;
   state: SessionState;
   retry: RetryInfo | null;
   createdAt: number;
@@ -30,19 +33,83 @@ export const sendJSON = <T>(url: string, method: string, body?: unknown) =>
     body: body === undefined ? undefined : JSON.stringify(body),
   }).then((r) => parse<T>(r));
 
-export function useFetch<T>(url: string) {
+const LIVE_DEBOUNCE_MS = 300;
+
+function debounce(fn: () => void, ms: number) {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const run = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      fn();
+    }, ms);
+  };
+  run.cancel = () => timer && clearTimeout(timer);
+  return run;
+}
+
+// `live` refetches when a task settles (goes idle or closes), so a page shows
+// what it wrote (tracker rows, ranked jobs, PDFs) without a manual reload.
+// Bursts are coalesced, and only the newest request may commit its response.
+export function useFetch<T>(url: string, opts: { live?: boolean } = {}) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const seq = useRef(0);
   const reload = useCallback(() => {
+    const mine = ++seq.current;
     getJSON<T>(url)
       .then((d) => {
+        if (mine !== seq.current) return;
         setData(d);
         setError(null);
       })
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error) => mine === seq.current && setError(e.message));
   }, [url]);
   useEffect(reload, [reload]);
+  useEffect(() => {
+    if (!opts.live) return;
+    const soon = debounce(reload, LIVE_DEBOUNCE_MS);
+    const off = live.listen((m) => m.t === "sessions" && m.settled && soon());
+    return () => {
+      off();
+      soon.cancel();
+    };
+  }, [opts.live, reload]);
   return { data, error, reload };
+}
+
+// One shared copy of the active-session list for the whole app (sidebar
+// badges, task panel, toast, chat list). It skips the on-disk history scan.
+let activeSessions: SessionSummary[] = [];
+let activeSeq = 0;
+const activeListeners = new Set<() => void>();
+
+const refreshActive = debounce(() => {
+  const mine = ++activeSeq;
+  getJSON<{ active: SessionSummary[] }>("/api/sessions?past=0")
+    .then((d) => {
+      if (mine !== activeSeq) return;
+      activeSessions = d.active;
+      for (const l of activeListeners) l();
+    })
+    .catch(() => undefined);
+}, 100);
+
+// Module-level so its identity is stable: React resubscribes whenever the
+// subscribe function changes, and a fresh one per render would empty the
+// listener set and refetch after every update, forever.
+function subscribeActive(l: () => void) {
+  if (activeListeners.size === 0) refreshActive();
+  activeListeners.add(l);
+  return () => {
+    activeListeners.delete(l);
+  };
+}
+
+const readActive = () => activeSessions;
+
+export function useActiveSessions(): SessionSummary[] {
+  return useSyncExternalStore(subscribeActive, readActive);
 }
 
 export const fileUrl = (path: string) => `/api/file?path=${encodeURIComponent(path)}`;
@@ -57,15 +124,20 @@ export function safeHttpUrl(url: unknown): string | null {
   }
 }
 
-export async function runCommand(prompt: string) {
-  const s = await sendJSON<SessionSummary>("/api/sessions", "POST", { prompt });
-  location.hash = `#/chat/${s.id}`;
+export type TaskMeta = { title?: string; kind?: string };
+
+export async function runCommand(prompt: string, meta: TaskMeta = {}) {
+  const title = meta.title ?? commandLabel(prompt) ?? undefined;
+  const kind = meta.kind ?? /^\/([a-z][a-z-]*)/.exec(prompt)?.[1];
+  const s = await sendJSON<SessionSummary>("/api/sessions", "POST", { prompt, title, kind });
+  panel.show(s.id);
+  return s;
 }
 
 type ServerMsg =
   | { t: "snapshot"; id: string; session: SessionSummary; events: ChatEvent[] }
   | { t: "event"; id: string; ev: LiveEvent }
-  | { t: "sessions" }
+  | { t: "sessions"; settled?: boolean }
   | { t: "error"; id?: string; text: string };
 
 type Listener = (msg: ServerMsg) => void;
@@ -73,7 +145,8 @@ type Listener = (msg: ServerMsg) => void;
 class Live {
   private ws: WebSocket | null = null;
   private listeners = new Set<Listener>();
-  private subs = new Set<string>();
+  // Reference counts: the task panel and the chat page may watch one session.
+  private subs = new Map<string, number>();
   private queue: string[] = [];
 
   constructor() {
@@ -84,9 +157,10 @@ class Live {
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
     this.ws = ws;
     ws.onopen = () => {
-      for (const id of this.subs) ws.send(JSON.stringify({ t: "subscribe", id }));
+      for (const id of this.subs.keys()) ws.send(JSON.stringify({ t: "subscribe", id }));
       for (const m of this.queue.splice(0)) ws.send(m);
-      this.dispatch({ t: "sessions" });
+      // Anything may have changed while disconnected.
+      this.dispatch({ t: "sessions", settled: true });
     };
     ws.onmessage = (e) => this.dispatch(JSON.parse(String(e.data)) as ServerMsg);
     ws.onclose = () => setTimeout(() => this.connect(), 1500);
@@ -103,11 +177,16 @@ class Live {
   }
 
   subscribe(id: string) {
-    this.subs.add(id);
+    this.subs.set(id, (this.subs.get(id) ?? 0) + 1);
     this.send({ t: "subscribe", id });
   }
 
   unsubscribe(id: string) {
+    const n = (this.subs.get(id) ?? 0) - 1;
+    if (n > 0) {
+      this.subs.set(id, n);
+      return;
+    }
     this.subs.delete(id);
     this.send({ t: "unsubscribe", id });
   }
@@ -121,3 +200,4 @@ class Live {
 }
 
 export const live = new Live();
+live.listen((m) => m.t === "sessions" && refreshActive());

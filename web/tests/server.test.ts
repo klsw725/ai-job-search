@@ -2,13 +2,13 @@ import { describe, expect, test } from "bun:test";
 
 // Non-Linux hosts have no race-free path walk; the tests exercise the path-based fallback.
 if (process.platform !== "linux") process.env.AJS_INSECURE_PATH_CHECKS = "1";
-import { mkdtemp, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { messageToEvents } from "../src/server/agent.ts";
 import { parseCsv } from "../src/server/csv.ts";
 import { displayBaseUrl, isWorkspaceTrusted, listFiles, readProfile, readProjectRules, readSeenJobs, readTracker, trustWorkspace } from "../src/server/data.ts";
-import { hostAllowed, nextChunkSize, normalizeRel, originAllowed, readChecked, resolveReadable, safeFileName, writeUpload } from "../src/server/security.ts";
+import { clearFolder, hostAllowed, listFolderEntries, mountPoints, mountsInTheWay, PartialDeleteError, nextChunkSize, normalizeRel, originAllowed, readChecked, resolveReadable, safeFileName, writeUpload } from "../src/server/security.ts";
 import { renderMarkdown } from "../src/client/markdown.ts";
 import { isVetoed, recommended } from "../src/client/jobs.ts";
 
@@ -266,5 +266,112 @@ describe("rendering", () => {
     expect(a).toEqual([{ kind: "assistant", text: "안녕", tools: [{ id: "t1", name: "Bash", input: '{\n  "command": "ls"\n}' }], sub: false }]);
     const u = messageToEvents("user", { content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "ok" }] }] }, false);
     expect(u).toEqual([{ kind: "tool_result", toolUseId: "t1", text: "ok", isError: false }]);
+  });
+});
+
+describe("reset", () => {
+  const PROFILE = ["documents", "profile"];
+
+  test("the profile folder is emptied, nested and hidden entries included, and the folder kept", async () => {
+    const repo = await fixtureRepo();
+    await mkdir(join(repo, "documents/profile/drafts"), { recursive: true });
+    await writeFile(join(repo, "documents/profile/candidate.md"), "# 홍길동");
+    await writeFile(join(repo, "documents/profile/.hidden"), "x");
+    await writeFile(join(repo, "documents/profile/drafts/old.md"), "x");
+    expect(await listFolderEntries(PROFILE, repo)).toEqual([".hidden", "candidate.md", "drafts"]);
+    expect(await clearFolder(PROFILE, repo)).toEqual([".hidden", "candidate.md", "drafts"]);
+    expect(await readdir(join(repo, "documents/profile"))).toEqual([]);
+    expect((await stat(join(repo, "documents/cv/.gitkeep"))).isFile()).toBe(true);
+  });
+
+  test("a missing profile folder is nothing to delete", async () => {
+    const repo = await fixtureRepo();
+    expect(await listFolderEntries(PROFILE, repo)).toEqual([]);
+    expect(await clearFolder(PROFILE, repo)).toEqual([]);
+  });
+
+  test("a symlinked profile folder is refused and its target left alone", async () => {
+    const repo = await fixtureRepo();
+    const outside = await mkdtemp(join(tmpdir(), "ajs-outside-"));
+    await writeFile(join(outside, "keep.md"), "keep");
+    await symlink(outside, join(repo, "documents/profile"));
+    await expect(clearFolder(PROFILE, repo)).rejects.toThrow();
+    expect(await readFile(join(outside, "keep.md"), "utf-8")).toBe("keep");
+  });
+
+  test("a symlink inside the profile is removed as a link, never followed", async () => {
+    const repo = await fixtureRepo();
+    const outside = await mkdtemp(join(tmpdir(), "ajs-outside-"));
+    await mkdir(join(outside, "dir"));
+    await writeFile(join(outside, "dir/keep.md"), "keep");
+    await mkdir(join(repo, "documents/profile"), { recursive: true });
+    await symlink(join(outside, "dir"), join(repo, "documents/profile/link"));
+    expect(await clearFolder(PROFILE, repo)).toEqual(["link"]);
+    await expect(lstat(join(repo, "documents/profile/link"))).rejects.toThrow();
+    expect(await readFile(join(outside, "dir/keep.md"), "utf-8")).toBe("keep");
+  });
+
+  test.skipIf(process.platform === "linux")("without the opt-in, non-Linux hosts refuse to delete", async () => {
+    const repo = await fixtureRepo();
+    await mkdir(join(repo, "documents/profile"), { recursive: true });
+    await writeFile(join(repo, "documents/profile/candidate.md"), "x");
+    delete process.env.AJS_INSECURE_PATH_CHECKS;
+    try {
+      await expect(clearFolder(PROFILE, repo)).rejects.toMatchObject({ code: "ENOTSUP" });
+    } finally {
+      process.env.AJS_INSECURE_PATH_CHECKS = "1";
+    }
+    expect(await readdir(join(repo, "documents/profile"))).toEqual(["candidate.md"]);
+  });
+
+  test("mount points are read from mountinfo, octal escapes decoded", () => {
+    const info = [
+      "36 35 98:0 /mnt1 /workspace rw,noatime master:1 - ext3 /dev/root rw",
+      "37 36 98:0 /x /workspace/documents/profile/my\\040data rw - ext4 /dev/sda rw",
+    ].join("\n");
+    expect(mountPoints(info)).toEqual(["/workspace", "/workspace/documents/profile/my data"]);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("a failure part-way reports what was already deleted", async () => {
+    const repo = await fixtureRepo();
+    await mkdir(join(repo, "documents/profile/b-locked"), { recursive: true });
+    await writeFile(join(repo, "documents/profile/a.md"), "x");
+    await writeFile(join(repo, "documents/profile/b-locked/keep.md"), "x");
+    await chmod(join(repo, "documents/profile/b-locked"), 0o500);
+    try {
+      const err = await clearFolder(PROFILE, repo).catch((e) => e);
+      expect(err).toBeInstanceOf(PartialDeleteError);
+      expect(err.deleted).toEqual(["a.md"]);
+      expect(err.removedAny).toBe(true);
+      expect(await readdir(join(repo, "documents/profile"))).toEqual(["b-locked"]);
+    } finally {
+      await chmod(join(repo, "documents/profile/b-locked"), 0o700);
+    }
+  });
+
+  test("a mount on the way to the folder or inside it is refused; the repo's own mount is not", () => {
+    const repo = "/workspace";
+    const target = "/workspace/documents/profile";
+    expect(mountsInTheWay(["/", "/workspace"], repo, target)).toEqual([]);
+    expect(mountsInTheWay(["/workspace/documents"], repo, target)).toEqual(["/workspace/documents"]);
+    expect(mountsInTheWay(["/workspace/documents/profile"], repo, target)).toEqual(["/workspace/documents/profile"]);
+    expect(mountsInTheWay(["/workspace/documents/profile/x"], repo, target)).toEqual(["/workspace/documents/profile/x"]);
+    expect(mountsInTheWay(["/workspace/cv", "/workspace/documents/profiles"], repo, target)).toEqual([]);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("a failure deep inside the first entry is reported as a partial deletion", async () => {
+    const repo = await fixtureRepo();
+    await mkdir(join(repo, "documents/profile/a/z-locked"), { recursive: true });
+    await writeFile(join(repo, "documents/profile/a/m.md"), "x");
+    await writeFile(join(repo, "documents/profile/a/z-locked/keep.md"), "x");
+    await chmod(join(repo, "documents/profile/a/z-locked"), 0o500);
+    try {
+      const err = await clearFolder(PROFILE, repo).catch((e) => e);
+      expect(err).toBeInstanceOf(PartialDeleteError);
+      expect(err.deleted).toEqual([]);
+      expect(err.removedAny).toBe(true);
+    } finally {
+      await chmod(join(repo, "documents/profile/a/z-locked"), 0o700);
+    }
   });
 });

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { safeHttpUrl, useFetch } from "../api.ts";
-import { GATES, isVetoed } from "../jobs.ts";
+import { GATES } from "../jobs.ts";
+import { GATE_TEXT, STATUS_LABEL } from "../labels.ts";
 import { Card, CommandButton, Deadline, ErrorBox, StatusChip } from "../ui.tsx";
 
 type Job = Record<string, unknown> & { key: string };
@@ -8,7 +9,7 @@ type Job = Record<string, unknown> & { key: string };
 const str = (v: unknown) => (v === null || v === undefined ? "" : String(v));
 
 export function Jobs() {
-  const { data, error, reload } = useFetch<{ exists: boolean; jobs: Job[]; error?: string }>("/api/jobs");
+  const { data, error, reload } = useFetch<{ exists: boolean; jobs: Job[]; error?: string }>("/api/jobs", { live: true });
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
 
@@ -24,40 +25,43 @@ export function Jobs() {
 
   return (
     <div className="stack">
-      <h1>공고</h1>
+      <h1>공고 찾기</h1>
       <ErrorBox error={error ?? data?.error ?? null} />
       <Card
-        title={`수집된 공고 ${data?.jobs.length ?? 0}건`}
+        title={`모은 공고 ${data?.jobs.length ?? 0}건`}
         actions={
           <>
-            <CommandButton prompt="/scrape" label="새로 검색" />
-            <CommandButton prompt="/rank" label="순위 매기기" />
+            <CommandButton prompt="/scrape" label="새 공고 찾기" hint="채용 사이트에서 내 조건에 맞는 공고를 모아요" />
+            <CommandButton prompt="/rank" label="공고 평가하기" hint="모은 공고를 내 프로필과 비교해 점수를 매겨요" />
             <button className="btn secondary" onClick={reload}>새로고침</button>
           </>
         }
       >
         <div className="row">
-          <input placeholder="회사·직무 검색" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input placeholder="회사·직무로 찾기" value={q} onChange={(e) => setQ(e.target.value)} />
           <select value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="all">전체 상태</option>
+            <option value="all">모든 상태</option>
             {statuses.map((s) => (
-              <option key={s} value={s}>{s}</option>
+              <option key={s} value={s}>{STATUS_LABEL[s] ?? s}</option>
             ))}
           </select>
         </div>
         {data && !data.exists ? (
-          <p className="muted">아직 수집된 공고가 없습니다. /scrape를 실행하거나, 채용 사이트에서 찾은 공고 URL을 대시보드의 "새 공고 지원"에 넣으세요.</p>
+          <p className="muted">
+            아직 모은 공고가 없어요. [새 공고 찾기]를 누르면 AI가 채용 사이트를 검색해요. 이미 찾아 둔 공고가 있다면 <a href="#/">홈</a>에서 링크를 넣어 바로
+            지원서를 만들 수 있어요.
+          </p>
         ) : (
           <table>
             <thead>
               <tr>
-                <th>점수</th>
+                <th>적합도</th>
                 <th>회사</th>
                 <th>직무</th>
-                <th>출처</th>
+                <th>사이트</th>
                 <th>상태</th>
                 <th>마감</th>
-                <th>강점 / 갭</th>
+                <th>잘 맞는 점 / 부족한 점</th>
                 <th></th>
               </tr>
             </thead>
@@ -66,23 +70,21 @@ export function Jobs() {
                 const url = safeHttpUrl(j.url);
                 return (
                   <tr key={j.key}>
-                    <td className="num">{j.rank_score === undefined ? "-" : str(j.rank_score)}</td>
+                    <td className="num">{j.rank_score === undefined ? <span className="muted">평가 전</span> : `${str(j.rank_score)}점`}</td>
                     <td>{str(j.company)}</td>
                     <td>
                       {url ? <a href={url} target="_blank" rel="noopener noreferrer">{str(j.title)}</a> : str(j.title)}
-                      {isVetoed(j) && <span className="chip st-rejected">추천 제외</span>}
-                      {GATES.map(([field, label, noteField]) =>
-                        j[field] && j[field] !== "PASS" ? (
-                          <span key={field} className={j[field] === "FAIL" ? "chip st-rejected" : "chip warn"} title={noteField ? str(j[noteField]) : undefined}>
-                            {label} {str(j[field])}
-                          </span>
-                        ) : null,
-                      )}
-                      {GATES.map(([field, , noteField]) =>
-                        noteField && j[field] && j[field] !== "PASS" && j[noteField] ? (
-                          <div key={noteField} className="small muted">{str(j[noteField])}</div>
-                        ) : null,
-                      )}
+                      {GATES.map(([field, , noteField]) => {
+                        const verdict = str(j[field]);
+                        if (verdict !== "FAIL" && verdict !== "FLAG") return null;
+                        const note = noteField ? str(j[noteField]) : "";
+                        return (
+                          <div key={field} className={`gate ${verdict === "FAIL" ? "fail" : "flag"}`}>
+                            {GATE_TEXT[field]![verdict]}
+                            {note && <span className="muted"> — {note}</span>}
+                          </div>
+                        );
+                      })}
                     </td>
                     <td>{str(j.portal)}</td>
                     <td><StatusChip status={str(j.status)} /></td>
@@ -91,7 +93,9 @@ export function Jobs() {
                       {Array.isArray(j.strengths) && <div>+ {j.strengths.map(str).join(", ")}</div>}
                       {Array.isArray(j.gaps) && <div className="muted">− {j.gaps.map(str).join(", ")}</div>}
                     </td>
-                    <td>{url && <CommandButton prompt={`/apply ${url}`} label="지원" />}</td>
+                    <td>
+                      {url && <CommandButton prompt={`/apply ${url}`} label="지원서 만들기" task={`지원서 만들기 · ${str(j.company)} / ${str(j.title)}`} />}
+                    </td>
                   </tr>
                 );
               })}

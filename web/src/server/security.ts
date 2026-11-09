@@ -1,5 +1,5 @@
 import { constants, existsSync } from "node:fs";
-import { lstat, mkdir, open, realpath, stat, type FileHandle } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, realpath, rmdir, stat, unlink, type FileHandle } from "node:fs/promises";
 import { join, posix, relative, resolve, sep } from "node:path";
 import { DOWNLOAD_LIMIT_BYTES, EXTRA_HOSTS, REPO_DIR } from "./config.ts";
 
@@ -222,6 +222,152 @@ export async function writeUpload(dir: string, name: string, data: Uint8Array, r
     await fh.close();
   }
   return `documents/${dir}/${name}`;
+}
+
+// Opens <realRepo>/<parts...> as a folder with the same per-component checks as
+// openBeneath and returns a path that addresses its entries: through the
+// descriptor on Linux, through the verified real path on the opt-in fallback.
+// A missing folder yields null.
+async function openDirBeneath(realRepo: string, parts: string[]): Promise<{ at: string; close: () => Promise<void> } | null> {
+  if (parts.length === 0 || parts.some(blockedSegment) || parts.some((p) => p === "." || p.includes("/"))) {
+    throw codeError("invalid path", "EINVAL");
+  }
+  const missing = (e: NodeJS.ErrnoException) => {
+    if (e.code === "ENOENT") return null;
+    if (e.code === "ELOOP" || e.code === "ENOTDIR") throw codeError(`${parts.join("/")} 경로에 일반 폴더가 아닌 항목(링크 등)이 있습니다`, "ENOTDIR");
+    throw e;
+  };
+  if (!PROC_FD) {
+    if (process.env.AJS_INSECURE_PATH_CHECKS !== "1") {
+      throw codeError("secure file access needs Linux (/proc/self/fd): run the web UI in Docker, or set AJS_INSECURE_PATH_CHECKS=1", "ENOTSUP");
+    }
+    let path = realRepo;
+    for (const part of parts) {
+      path = join(path, part);
+      const l = await lstat(path).catch(missing);
+      if (l === null) return null;
+      if (l.isSymbolicLink() || !l.isDirectory()) missing(Object.assign(new Error(), { code: "ENOTDIR" }));
+    }
+    return { at: path, close: async () => {} };
+  }
+  let dir = await open(realRepo, C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW);
+  try {
+    for (const part of parts) {
+      const next = await open(`/proc/self/fd/${dir.fd}/${part}`, C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW).catch(missing);
+      if (next === null) {
+        await dir.close();
+        return null;
+      }
+      await dir.close();
+      dir = next;
+    }
+  } catch (e) {
+    await dir.close();
+    throw e;
+  }
+  const handle = dir;
+  return { at: `/proc/self/fd/${handle.fd}`, close: () => handle.close() };
+}
+
+// Mount points listed in /proc/self/mountinfo (field 5, octal-escaped).
+export function mountPoints(mountinfo: string): string[] {
+  return mountinfo
+    .split("\n")
+    .map((line) => line.split(" ")[4])
+    .filter((p): p is string => Boolean(p))
+    .map((p) => p.replace(/\\([0-7]{3})/g, (_, o: string) => String.fromCharCode(parseInt(o, 8))));
+}
+
+// Mount points that a recursive delete of `realFolder` would reach through:
+// the folder itself, anything inside it, and any folder between the repo and
+// it (a bind-mounted documents/ would put the whole target elsewhere). The
+// repo's own mount is fine. Bind mounts share a device id, so this list, not
+// a device comparison, is the check.
+export function mountsInTheWay(points: string[], realRepo: string, realFolder: string): string[] {
+  const under = (p: string, root: string) => p === root || p.startsWith(`${root}/`);
+  return points.filter((m) => m !== realRepo && under(m, realRepo) && (under(m, realFolder) || under(realFolder, m)));
+}
+
+async function refuseMounts(realRepo: string, realFolder: string) {
+  if (!existsSync("/proc/self/mountinfo")) return;
+  const found = mountsInTheWay(mountPoints(await readFile("/proc/self/mountinfo", "utf-8")), realRepo, realFolder);
+  if (found.length) throw codeError(`지울 폴더 경로에 마운트된 폴더가 있어 지우지 않았습니다: ${found.join(", ")}`, "EXDEV");
+}
+
+// Deletes one entry. A folder is opened without following links before its
+// contents are removed, so a folder swapped for a symlink mid-way makes the
+// removal fail instead of reaching outside; a symlink itself is unlinked, never
+// followed. A folder on another device than the starting one (a mount) stops
+// the walk before anything inside it is touched.
+async function removeEntry(parentAt: string, name: string, dev: number, progress: { removed: number }): Promise<void> {
+  const at = `${parentAt}/${name}`;
+  const l = await lstat(at);
+  if (l.isDirectory()) {
+    if (l.dev !== dev) throw codeError(`${name}은(는) 다른 장치(마운트)에 있어 지우지 않았습니다`, "EXDEV");
+    const dh = await open(at, C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW);
+    try {
+      if ((await dh.stat()).dev !== dev) throw codeError(`${name}은(는) 다른 장치(마운트)에 있어 지우지 않았습니다`, "EXDEV");
+      const inner = PROC_FD ? `/proc/self/fd/${dh.fd}` : at;
+      for (const n of (await readdir(inner)).sort()) await removeEntry(inner, n, dev, progress);
+    } finally {
+      await dh.close();
+    }
+    await rmdir(at);
+  } else {
+    await unlink(at);
+  }
+  progress.removed += 1;
+}
+
+// Carries what was removed before a failure, so a partial reset is reported
+// as partial rather than as a bare error: `deleted` names the top-level
+// entries fully gone, `removedAny` is true if anything at all was removed,
+// including files deep inside an entry that was not finished.
+export class PartialDeleteError extends Error {
+  constructor(
+    message: string,
+    readonly deleted: string[],
+    readonly removedAny: boolean,
+    readonly code?: string,
+  ) {
+    super(message);
+  }
+}
+
+export async function listFolderEntries(parts: string[], repo = REPO_DIR): Promise<string[]> {
+  const dir = await openDirBeneath(await realpath(repo), parts);
+  if (!dir) return [];
+  try {
+    return (await readdir(dir.at)).sort();
+  } finally {
+    await dir.close();
+  }
+}
+
+// Empties a folder beneath the repo and keeps the folder itself, the way
+// /reset profile does. Returns the top-level entries it deleted; on failure
+// throws PartialDeleteError naming the ones already gone.
+export async function clearFolder(parts: string[], repo = REPO_DIR): Promise<string[]> {
+  const realRepo = await realpath(repo);
+  const dir = await openDirBeneath(realRepo, parts);
+  if (!dir) return [];
+  const deleted: string[] = [];
+  const progress = { removed: 0 };
+  try {
+    await refuseMounts(realRepo, join(realRepo, ...parts));
+    const { dev } = await stat(dir.at);
+    if ((await stat(realRepo)).dev !== dev) throw codeError(`${parts.join("/")}이(가) 저장소와 다른 장치에 있어 지우지 않았습니다`, "EXDEV");
+    for (const name of (await readdir(dir.at)).sort()) {
+      await removeEntry(dir.at, name, dev, progress);
+      deleted.push(name);
+    }
+    return deleted;
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    throw new PartialDeleteError(err.message, deleted, progress.removed > 0, err.code);
+  } finally {
+    await dir.close();
+  }
 }
 
 export function safeFileName(name: string): string | null {
