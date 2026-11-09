@@ -142,7 +142,21 @@ const PORTAL_NAME: Record<string, string> = {
   jobdanmark: "Jobdanmark",
   jobbank: "Jobbank",
   freehire: "Freehire",
+  wanted: "원티드",
+  remember: "리멤버",
+  catch: "캐치",
+  saramin: "사람인",
+  jobkorea: "잡코리아",
+  jumpit: "점핏",
+  rocketpunch: "로켓펀치",
+  programmers: "프로그래머스",
 };
+
+// Job rows carry the portal id ("linkedin-search", "wanted"), not its name.
+export function portalName(portal: string): string {
+  const id = portal.trim().toLowerCase().replace(/-search$/, "");
+  return PORTAL_NAME[id] ?? portal;
+}
 
 function describeCommand(cmd: string): string {
   const portal = /([\w-]+)-search\b/.exec(cmd)?.[1];

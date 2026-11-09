@@ -143,7 +143,17 @@ export function SentAttachments({ paths }: { paths?: string[] }) {
   );
 }
 
-export function DropZone({ onFiles, className, children }: { onFiles: (f: FileList) => void; className?: string; children: ReactNode }) {
+export function DropZone({
+  onFiles,
+  className,
+  hint = "여기에 놓으면 첨부돼요",
+  children,
+}: {
+  onFiles: (f: FileList) => void;
+  className?: string;
+  hint?: string;
+  children: ReactNode;
+}) {
   const [over, setOver] = useState(false);
   const depth = useRef(0);
   const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
@@ -170,7 +180,7 @@ export function DropZone({ onFiles, className, children }: { onFiles: (f: FileLi
       }}
     >
       {children}
-      {over && <div className="drop-hint">여기에 놓으면 첨부돼요</div>}
+      {over && <div className="drop-hint">{hint}</div>}
     </div>
   );
 }

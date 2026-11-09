@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react";
 import { fileUrl, safeHttpUrl, useFetch } from "../api.ts";
-import { Card, CommandButton, Deadline, ErrorBox, StatusChip } from "../ui.tsx";
+import { Card, CommandButton, Deadline, EmptyState, ErrorBox, Icon, PageHeader, StatusChip } from "../ui.tsx";
 
 type Row = Record<string, string>;
 type FileEntry = { path: string };
@@ -19,29 +19,50 @@ export function Tracker() {
   const fileSet = new Set((files.data ?? []).map((f) => f.path));
 
   const rows = (data?.rows ?? []).map((r, i) => ({ r, i })).filter(({ r }) => showClosed || r._open === "1").reverse();
+  const none = data !== null && (data.rows?.length ?? 0) === 0 && !error;
 
   return (
     <div className="stack">
-      <h1>내 지원</h1>
-      <ErrorBox error={error} />
-      <Card
-        title={`지원 ${data?.rows.length ?? 0}건`}
+      <PageHeader
+        title="내 지원"
+        description="만든 지원서와 지원 결과를 한곳에서 챙겨요. 행을 누르면 메모와 다음 할 일이 보여요."
         actions={
           <>
+            <button className="btn ghost" onClick={reload} title="새로고침" aria-label="새로고침">
+              <Icon name="refresh" size={15} />
+            </button>
+            {!none && (
+              <>
+                <CommandButton prompt="/outcome" label="결과 기록하기" hint="서류 결과, 면접, 불합격 같은 소식을 기록해요" />
+                <CommandButton prompt="/outcome followup" label="후속 연락 메일 쓰기" hint="답이 없는 지원에 보낼 확인 메일 초안을 써요" />
+              </>
+            )}
+          </>
+        }
+      />
+      <ErrorBox error={error} />
+      {none ? (
+        <EmptyState
+          icon="clipboard"
+          title="아직 지원 기록이 없어요"
+          action={
+            <>
+              <a className="btn primary" href="#/jobs">추천 공고 보기</a>
+              <a className="btn" href="#/">공고 링크로 지원서 만들기</a>
+            </>
+          }
+        >
+          지원서를 만들면 여기에 쌓이고, 서류 결과·면접·합격 소식까지 이어서 기록할 수 있어요.
+        </EmptyState>
+      ) : (
+        <Card
+          title={`지원 ${data?.rows.length ?? 0}건`}
+          actions={
             <label className="row small">
               <input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} /> 끝난 지원도 보기
             </label>
-            <CommandButton prompt="/outcome" label="결과 기록하기" hint="서류 결과, 면접, 불합격 같은 소식을 기록해요" />
-            <CommandButton prompt="/outcome followup" label="후속 연락 메일 쓰기" hint="답이 없는 지원에 보낼 확인 메일 초안을 써요" />
-            <button className="btn secondary" onClick={reload}>새로고침</button>
-          </>
-        }
-      >
-        {data && !data.exists ? (
-          <p className="muted">
-            아직 지원 기록이 없어요. <a href="#/">홈</a>에서 공고 링크를 넣어 첫 지원서를 만들면 여기에 쌓여요.
-          </p>
-        ) : (
+          }
+        >
           <table>
             <thead>
               <tr>
@@ -95,8 +116,8 @@ export function Tracker() {
               })}
             </tbody>
           </table>
-        )}
-      </Card>
+        </Card>
+      )}
     </div>
   );
 }

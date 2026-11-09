@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { runCommand, safeHttpUrl, useActiveSessions, useFetch, type SessionSummary } from "../api.ts";
 import { AttachButton, AttachmentTray, DropZone, useAttachments } from "../attach.tsx";
-import { recommended } from "../jobs.ts";
+import { fitBand, recommended } from "../jobs.ts";
 import { COMMAND_LABEL } from "../labels.ts";
 import { panel } from "../panel.ts";
-import { Card, CommandButton, Deadline, ErrorBox, Icon, StatusChip, daysUntil } from "../ui.tsx";
+import { Card, CommandButton, Deadline, EmptyState, ErrorBox, Icon, PageHeader, StatusChip, daysUntil } from "../ui.tsx";
 import { journey, untracked, type NextAction, type Stage, type StageId } from "../workflow.ts";
 import { TrustCard, setupIssues, type Status } from "./Settings.tsx";
 
@@ -217,10 +217,7 @@ export function Dashboard() {
 
   return (
     <div className="stack home">
-      <header className="page-head">
-        <h1>홈</h1>
-        <p className="muted">지금 어디까지 왔는지, 다음에 무엇을 하면 되는지 한눈에 보여 드려요.</p>
-      </header>
+      <PageHeader title="홈" description="지금 어디까지 왔는지, 다음에 무엇을 하면 되는지 한눈에 보여 드려요." />
       <ErrorBox error={status.error ?? tracker.error ?? jobs.error} />
 
       {issues.length > 0 && (
@@ -238,7 +235,9 @@ export function Dashboard() {
       <div className="grid2">
         <Card title="내 지원 현황" actions={<a href="#/tracker">전체 보기</a>}>
           {rows.length === 0 ? (
-            <p className="muted">아직 지원한 곳이 없어요. 위에 공고 링크를 넣어 첫 지원서를 만들어 보세요.</p>
+            <EmptyState icon="clipboard" title="아직 지원한 곳이 없어요">
+              위에 공고 링크를 넣거나 추천 공고에서 첫 지원서를 만들어 보세요.
+            </EmptyState>
           ) : (
             <Pipeline rows={rows} />
           )}
@@ -258,14 +257,19 @@ export function Dashboard() {
 
         <Card title="추천 공고" actions={<a href="#/jobs">전체 보기</a>}>
           {ranked.length === 0 ? (
-            <p className="muted">아직 추천할 공고가 없어요. 공고를 모으고 평가하면 내 프로필과 잘 맞는 순서로 보여 드려요.</p>
+            <EmptyState icon="briefcase" title="아직 추천할 공고가 없어요">
+              공고를 모으고 평가하면 내 프로필과 잘 맞는 순서로 보여 드려요.
+            </EmptyState>
           ) : (
             <ul className="plain">
               {ranked.map((j) => (
                 <li key={String(j.key)} className="row job-row">
-                  <span className="score">{String(j.rank_score)}점</span>
-                  <span className="grow">
-                    <b>{String(j.company ?? "")}</b> · {String(j.title ?? "")}
+                  <span className={`score-badge sm ${fitBand(j.rank_score as number).tone}`} title={fitBand(j.rank_score as number).label}>
+                    <b>{String(j.rank_score)}</b>
+                  </span>
+                  <span className="grow job-row-text">
+                    <span className="job-company">{String(j.company ?? "")}</span>
+                    <span className="ellipsis">{String(j.title ?? "")}</span>
                   </span>
                   {typeof j.url === "string" && (
                     <CommandButton prompt={`/apply ${j.url}`} label="지원서 만들기" task={`지원서 만들기 · ${String(j.company ?? "")} / ${String(j.title ?? "")}`} />

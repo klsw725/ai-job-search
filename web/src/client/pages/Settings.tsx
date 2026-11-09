@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { WEB_MODES, sendJSON, useFetch, type WebMode } from "../api.ts";
 import { MODE_TEXT } from "../labels.ts";
-import { Card, CommandButton, ErrorBox } from "../ui.tsx";
+import { Card, CommandButton, ErrorBox, PageHeader } from "../ui.tsx";
 
 export type Status = {
   auth: string | null;
@@ -422,7 +422,7 @@ export function Settings() {
 
   return (
     <div className="stack">
-      <h1>설정</h1>
+      <PageHeader title="설정" description="AI 연결과 PDF 도구 상태를 확인하고, 작업 방식과 내 데이터를 관리해요." />
       <ErrorBox error={status.error} />
       {s && (
         <>

@@ -12,9 +12,26 @@ const ICON_PATHS = {
   check: "M5 12l5 5 9-10",
   x: "M6 6l12 12M18 6 6 18",
   arrow: "M5 12h14m-6-6 6 6-6 6",
+  home: "M3 11l9-7 9 7M5 10v10h14V10M10 20v-6h4v6",
+  briefcase: "M3 8h18v12H3zM8 8V5h8v3M3 13h18",
+  clipboard: "M9 3h6v4H9zM7 5H5v16h14V5h-2M9 12h6M9 16h4",
+  folder: "M3 6h6l2 2h10v11H3z",
+  user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0",
+  chat: "M4 5h16v11H9l-5 4z",
+  sparkle: "M12 3l2 5.5L19.5 11 14 13.5 12 19l-2-5.5L4.5 11 10 8.5z",
+  sliders: "M4 6h9m4 0h3M4 12h3m4 0h9M4 18h11m4 0h1M15 4v4M9 10v4M17 16v4",
+  search: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM20 20l-4-4",
+  chevronDown: "M6 9l6 6 6-6",
+  chevronUp: "M6 15l6-6 6 6",
+  alert: "M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z",
+  upload: "M12 16V4m0 0-5 5m5-5 5 5M4 20h16",
+  refresh: "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7",
+  pin: "M12 21s-7-6.2-7-12a7 7 0 0 1 14 0c0 5.8-7 12-7 12zM12 11.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z",
 } as const;
 
-export function Icon({ name, size = 16 }: { name: keyof typeof ICON_PATHS; size?: number }) {
+export type IconName = keyof typeof ICON_PATHS;
+
+export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
   return (
     <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d={ICON_PATHS[name]} />
@@ -44,11 +61,35 @@ export function ErrorBox({ error }: { error: string | null }) {
   return error ? <div className="error-box">{error}</div> : null;
 }
 
+export function PageHeader({ title, description, actions }: { title: string; description?: ReactNode; actions?: ReactNode }) {
+  return (
+    <header className="page-head">
+      <div className="page-head-text">
+        <h1>{title}</h1>
+        {description && <p className="muted">{description}</p>}
+      </div>
+      {actions && <div className="page-actions">{actions}</div>}
+    </header>
+  );
+}
+
+export function EmptyState({ icon, title, children, action }: { icon: IconName; title: string; children?: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="empty-state">
+      <span className="empty-icon"><Icon name={icon} size={22} /></span>
+      <b>{title}</b>
+      {children && <p className="muted">{children}</p>}
+      {action && <div className="row wrap empty-actions">{action}</div>}
+    </div>
+  );
+}
+
 export function CommandButton({
   prompt,
   label,
   task,
   hint,
+  icon,
   kind = "secondary",
   disabled,
 }: {
@@ -56,6 +97,7 @@ export function CommandButton({
   label: string;
   task?: string;
   hint?: string;
+  icon?: IconName;
   kind?: "primary" | "secondary";
   disabled?: boolean;
 }) {
@@ -75,6 +117,7 @@ export function CommandButton({
             .finally(() => setBusy(false));
         }}
       >
+        {busy ? <span className="spinner" /> : icon && <Icon name={icon} size={15} />}
         {label}
       </button>
       {err && <span className="error-inline">{err}</span>}

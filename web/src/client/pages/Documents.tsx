@@ -1,18 +1,21 @@
-import { useEffect, useState } from "react";
-import { fileUrl, useFetch, zipUrl } from "../api.ts";
-import { attachmentLabel } from "../attach.tsx";
-import { Card, ErrorBox, Icon, Markdown, formatBytes, formatTime } from "../ui.tsx";
+import { useEffect, useRef, useState } from "react";
+import { fileUrl, uploadFile, useFetch, zipUrl } from "../api.ts";
+import { DropZone, attachmentLabel } from "../attach.tsx";
+import { Card, ErrorBox, Icon, Markdown, PageHeader, formatBytes, formatTime, type IconName } from "../ui.tsx";
 
 type FileEntry = { path: string; size: number; mtime: number };
 
-const UPLOAD_DIRS: [string, string][] = [
-  ["cv", "이력서"],
-  ["linkedin", "LinkedIn 프로필 (PDF)"],
-  ["diplomas", "졸업·성적 증명서"],
-  ["references", "추천서"],
-  ["projects", "프로젝트·포트폴리오"],
-  ["postings", "공고 원문"],
+const UPLOAD_SLOTS: { dir: string; label: string; hint: string; icon: IconName }[] = [
+  { dir: "cv", label: "이력서", hint: "AI가 프로필을 만들 때 가장 먼저 읽어요", icon: "user" },
+  { dir: "linkedin", label: "LinkedIn 프로필", hint: "LinkedIn에서 PDF로 저장한 프로필", icon: "file" },
+  { dir: "diplomas", label: "졸업·성적 증명서", hint: "학력과 성적을 확인할 때 써요", icon: "file" },
+  { dir: "references", label: "추천서", hint: "강점을 뒷받침하는 근거로 써요", icon: "file" },
+  { dir: "projects", label: "프로젝트·포트폴리오", hint: "경력에 드러나지 않은 역량을 찾을 때 읽어요", icon: "folder" },
+  { dir: "postings", label: "공고 원문", hint: "링크가 열리지 않는 공고의 PDF·캡처", icon: "briefcase" },
 ];
+
+// LaTeX build helpers next to the generated .tex files; not documents.
+const BUILD_HELPER = /\.(cls|sty|aux|log|out|toc|fls|fdb_latexmk|synctex\.gz|bbl|blg)$/i;
 
 const GROUP_LABEL: Record<string, string> = {
   cv: "AI가 만든 이력서",
@@ -26,6 +29,7 @@ const GROUP_LABEL: Record<string, string> = {
   "documents/profile": "내 프로필",
   "documents/attachments": "대화에 첨부한 파일",
   "documents/applications": "지원 건별 보관 자료",
+  documents: "기타 올린 자료",
   company_research: "회사 조사 자료",
   reports: "리포트",
   upskill: "역량 분석",
@@ -71,46 +75,71 @@ function Preview({ path }: { path: string }) {
   return /\.md$/i.test(path) ? <Markdown text={text} /> : <pre className="pre">{text}</pre>;
 }
 
-function Upload({ onDone }: { onDone: () => void }) {
-  const [dir, setDir] = useState("cv");
-  const [file, setFile] = useState<File | null>(null);
+function UploadSlot({ slot, count, onDone }: { slot: (typeof UPLOAD_SLOTS)[number]; count: number; onDone: () => void }) {
+  const input = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const send = async (files: FileList) => {
+    setBusy(true);
+    setMsg(null);
+    setErr(null);
+    const done: string[] = [];
+    for (const file of Array.from(files)) {
+      try {
+        await uploadFile(slot.dir, file);
+        done.push(file.name);
+      } catch (e) {
+        setErr(`${file.name}: ${e instanceof Error ? e.message : String(e)}`);
+        break;
+      }
+    }
+    if (done.length) setMsg(done.length === 1 ? `${done[0]} 올렸어요` : `${done.length}개 올렸어요`);
+    setBusy(false);
+    onDone();
+  };
+  return (
+    <DropZone className="upload-slot" hint="여기에 놓으면 올려요" onFiles={(f) => void send(f)}>
+      <div className="upload-slot-head">
+        <span className="slot-icon"><Icon name={slot.icon} size={16} /></span>
+        <b className="grow">{slot.label}</b>
+        {count > 0 && <span className="chip st-applied">{count}개</span>}
+      </div>
+      <p className="muted small">{slot.hint}</p>
+      <div className="row wrap">
+        <button className="btn small-btn" disabled={busy} onClick={() => input.current?.click()}>
+          {busy ? <span className="spinner" /> : <Icon name="upload" size={14} />} 파일 올리기
+        </button>
+        <span className="muted small">또는 끌어다 놓기</span>
+      </div>
+      <input
+        ref={input}
+        type="file"
+        multiple
+        hidden
+        onChange={(e) => {
+          if (e.target.files?.length) void send(e.target.files);
+          e.target.value = "";
+        }}
+      />
+      {msg && <span className="ok small">{msg}</span>}
+      {err && <span className="error-inline">{err}</span>}
+    </DropZone>
+  );
+}
+
+function Upload({ files, onDone }: { files: FileEntry[]; onDone: () => void }) {
   return (
     <Card title="자료 올리기">
       <p className="muted">
         이력서나 증명서를 올리면 AI가 프로필을 만들거나 보강할 때 읽어요. 올린 파일은 이 컴퓨터의 작업 폴더에만 저장되고 공개 저장소에는 올라가지
         않아요.
       </p>
-      <div className="row wrap">
-        <select value={dir} onChange={(e) => setDir(e.target.value)}>
-          {UPLOAD_DIRS.map(([v, l]) => (
-            <option key={v} value={v}>{l}</option>
-          ))}
-        </select>
-        <input type="file" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-        <button
-          className="btn primary"
-          disabled={!file}
-          onClick={async () => {
-            if (!file) return;
-            const form = new FormData();
-            form.set("dir", dir);
-            form.set("file", file);
-            setErr(null);
-            const res = await fetch("/api/upload", { method: "POST", body: form });
-            const body = (await res.json().catch(() => ({}))) as { path?: string; error?: string };
-            if (res.ok) {
-              setMsg(`${file.name}을(를) 올렸어요`);
-              onDone();
-            } else setErr(body.error ?? `HTTP ${res.status}`);
-          }}
-        >
-          올리기
-        </button>
+      <div className="upload-grid">
+        {UPLOAD_SLOTS.map((slot) => (
+          <UploadSlot key={slot.dir} slot={slot} count={files.filter((f) => f.path.startsWith(`documents/${slot.dir}/`)).length} onDone={onDone} />
+        ))}
       </div>
-      {msg && <p className="ok">{msg}</p>}
-      <ErrorBox error={err} />
     </Card>
   );
 }
@@ -120,20 +149,32 @@ export function Documents() {
   const [selected, setSelected] = useState<string | null>(null);
 
   const groups = new Map<string, FileEntry[]>(AI_GROUPS.map((g) => [g, []]));
+  let hidden = 0;
   for (const f of data ?? []) {
     const parts = f.path.split("/");
     const group = parts[0] === "documents" && parts.length > 2 ? `${parts[0]}/${parts[1]}` : parts[0]!;
+    if (AI_GROUPS.includes(group) && BUILD_HELPER.test(f.path)) {
+      hidden += 1;
+      continue;
+    }
     groups.set(group, [...(groups.get(group) ?? []), f]);
   }
   for (const [g, files] of groups) if (files.length === 0) groups.delete(g);
 
   return (
     <div className="stack">
-      <h1>서류함</h1>
+      <PageHeader title="서류함" description="내가 올린 자료와 AI가 만든 이력서·커버레터를 보고 내려받아요." />
       <ErrorBox error={error} />
-      <Upload onDone={reload} />
+      <Upload files={data ?? []} onDone={reload} />
       <div className="split">
-        <Card title="파일" actions={<button className="btn secondary" onClick={reload}>새로고침</button>}>
+        <Card
+          title="파일"
+          actions={
+            <button className="btn ghost" onClick={reload} title="새로고침" aria-label="새로고침">
+              <Icon name="refresh" size={15} />
+            </button>
+          }
+        >
           {[...groups.entries()].map(([g, files]) => (
             <details key={g} open={g === "cv" || g === "cover_letters"}>
               <summary>
@@ -160,6 +201,7 @@ export function Documents() {
             </details>
           ))}
           {data?.length === 0 && <p className="muted">아직 파일이 없어요.</p>}
+          {hidden > 0 && <p className="muted small">서류 서식용 보조 파일 {hidden}개는 목록에서 뜁어요.</p>}
         </Card>
         <Card
           title={selected?.split("/").pop() ?? "미리보기"}

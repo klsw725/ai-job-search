@@ -10,14 +10,15 @@ import { Tracker } from "./pages/Tracker.tsx";
 import { useActiveSessions } from "./api.ts";
 import { panel, usePanel } from "./panel.ts";
 import { TaskPanel } from "./TaskPanel.tsx";
+import { Icon, type IconName } from "./ui.tsx";
 
-const NAV = [
-  { path: "", label: "홈" },
-  { path: "jobs", label: "공고 찾기" },
-  { path: "tracker", label: "내 지원" },
-  { path: "documents", label: "서류함" },
-  { path: "profile", label: "내 프로필" },
-  { path: "chat", label: "AI 비서" },
+const NAV: { path: string; label: string; icon: IconName }[] = [
+  { path: "", label: "홈", icon: "home" },
+  { path: "jobs", label: "공고 찾기", icon: "briefcase" },
+  { path: "tracker", label: "내 지원", icon: "clipboard" },
+  { path: "documents", label: "서류함", icon: "folder" },
+  { path: "profile", label: "내 프로필", icon: "user" },
+  { path: "chat", label: "AI 비서", icon: "chat" },
 ];
 
 function useRoute() {
@@ -57,19 +58,27 @@ function App() {
   return (
     <div className="layout">
       <nav className="sidebar">
-        <div className="brand">AI Job Search</div>
+        <div className="brand">
+          <span className="brand-mark"><Icon name="sparkle" size={16} /></span>
+          AI Job Search
+        </div>
         {NAV.map((n) => (
-          <a key={n.path} href={`#/${n.path}`} className={page === n.path ? "active" : ""}>
+          <a key={n.path} href={`#/${n.path}`} className={page === n.path ? "nav-link active" : "nav-link"}>
+            <Icon name={n.icon} size={17} />
             {n.label}
           </a>
         ))}
         <div className="sidebar-bottom">
-          <button className={`sidebar-tasks ${open ? "active" : ""}`} onClick={() => panel.toggle()}>
+          <button className={`nav-link sidebar-tasks ${open ? "active" : ""}`} onClick={() => panel.toggle()}>
+            <Icon name="sparkle" size={17} />
             AI 작업
             {running > 0 && <span className="badge run">{running}</span>}
             {pending > 0 && <span className="badge wait">답변 {pending}</span>}
           </button>
-          <a href="#/settings" className={page === "settings" ? "active" : ""}>설정</a>
+          <a href="#/settings" className={page === "settings" ? "nav-link active" : "nav-link"}>
+            <Icon name="sliders" size={17} />
+            설정
+          </a>
         </div>
       </nav>
       <main className={page === "chat" ? "main chat-main" : "main"}>{body}</main>
