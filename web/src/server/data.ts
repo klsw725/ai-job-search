@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { bypassAllowed, isWebMode, type WebMode } from "./modes.ts";
 import { REPO_DIR } from "./config.ts";
 import { csvToObjects } from "./csv.ts";
 import { fileAccessMode, readChecked, resolveInRepo } from "./security.ts";
@@ -147,7 +148,7 @@ async function claudeCodeTrusts(repo: string) {
 }
 
 const consentPath = () => join(configDir(), "ai-job-search-web.json");
-type Consent = { trustedRepos?: string[] };
+type Consent = { trustedRepos?: string[]; permissionModes?: Record<string, string> };
 let consentWrite: Promise<void> = Promise.resolve();
 
 export async function isWorkspaceTrusted(repo = REPO_DIR) {
@@ -155,22 +156,36 @@ export async function isWorkspaceTrusted(repo = REPO_DIR) {
   return Boolean(consent?.trustedRepos?.includes(repo)) || (await claudeCodeTrusts(repo));
 }
 
-// Records the user's click in the web UI's own file. Only this process writes
-// it, so serializing writes in-process is enough; mode 0600 like other config.
-export function trustWorkspace(repo = REPO_DIR): Promise<void> {
+// Records the user's choices in the web UI's own file. Only this process
+// writes it, so serializing writes in-process is enough; mode 0600 like other config.
+function updateConsent(change: (c: Consent) => Consent): Promise<void> {
   // catch() first: one failed write must not poison every later click.
   const next = consentWrite.catch(() => undefined).then(async () => {
     await mkdir(configDir(), { recursive: true, mode: 0o700 });
     const consent = (await readJson<Consent>(consentPath())) ?? {};
-    const repos = new Set(consent.trustedRepos ?? []);
-    repos.add(repo);
     const tmp = `${consentPath()}.${crypto.randomUUID()}.tmp`;
-    await writeFile(tmp, JSON.stringify({ ...consent, trustedRepos: [...repos] }, null, 2), { mode: 0o600 });
+    await writeFile(tmp, JSON.stringify(change(consent), null, 2), { mode: 0o600 });
     await chmod(tmp, 0o600);
     await rename(tmp, consentPath());
   });
   consentWrite = next;
   return next;
+}
+
+export function trustWorkspace(repo = REPO_DIR): Promise<void> {
+  return updateConsent((consent) => ({ ...consent, trustedRepos: [...new Set([...(consent.trustedRepos ?? []), repo])] }));
+}
+
+// The mode new tasks start in. A saved bypass that this environment no longer
+// allows (the server moved out of Docker) falls back to asking.
+export async function readPermissionMode(repo = REPO_DIR): Promise<WebMode> {
+  const saved = (await readJson<Consent>(consentPath()))?.permissionModes?.[repo];
+  if (!isWebMode(saved) || (saved === "bypassPermissions" && !bypassAllowed())) return "default";
+  return saved;
+}
+
+export function savePermissionMode(mode: WebMode, repo = REPO_DIR): Promise<void> {
+  return updateConsent((consent) => ({ ...consent, permissionModes: { ...consent.permissionModes, [repo]: mode } }));
 }
 
 export type ProjectRules = { allow: string[]; deny: string[] };
@@ -230,5 +245,7 @@ export async function readStatus(repo = REPO_DIR) {
     lualatex: Bun.which("lualatex") !== null,
     activeTemplate,
     trusted: await isWorkspaceTrusted(repo),
+    permissionMode: await readPermissionMode(repo),
+    bypassAllowed: bypassAllowed(),
   };
 }

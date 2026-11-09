@@ -3,6 +3,25 @@ import { runCommand } from "./api.ts";
 import { STATUS_LABEL, commandLabel } from "./labels.ts";
 import { renderMarkdown } from "./markdown.ts";
 
+const ICON_PATHS = {
+  clip: "M21.4 11.1 12.2 20.3a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5",
+  download: "M12 3v12m0 0-5-5m5 5 5-5M4 19h16",
+  file: "M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6",
+  open: "M14 4h6v6m0-6L10 14M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5",
+  copy: "M9 9h11v11H9zM5 15H4V4h11v1",
+  check: "M5 12l5 5 9-10",
+  x: "M6 6l12 12M18 6 6 18",
+  arrow: "M5 12h14m-6-6 6 6-6 6",
+} as const;
+
+export function Icon({ name, size = 16 }: { name: keyof typeof ICON_PATHS; size?: number }) {
+  return (
+    <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={ICON_PATHS[name]} />
+    </svg>
+  );
+}
+
 export function Markdown({ text }: { text: string }) {
   return <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />;
 }

@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { sendJSON, useFetch } from "../api.ts";
+import { WEB_MODES, sendJSON, useFetch, type WebMode } from "../api.ts";
+import { MODE_TEXT } from "../labels.ts";
 import { Card, CommandButton, ErrorBox } from "../ui.tsx";
 
 export type Status = {
@@ -12,6 +13,8 @@ export type Status = {
   repo: string;
   trusted: boolean;
   fileAccess: "secure" | "insecure" | "blocked";
+  permissionMode: WebMode;
+  bypassAllowed: boolean;
 };
 
 const AUTH_LABEL: Record<string, string> = { subscription: "구독 토큰", api_key: "API 키", auth_token: "게이트웨이 토큰", login: "로그인 세션" };
@@ -46,6 +49,77 @@ export function TrustCard({ status, onDone }: { status: Status; onDone: () => vo
       <button className="btn primary" onClick={() => sendJSON("/api/trust", "POST").then(onDone)}>
         신뢰하기
       </button>
+    </Card>
+  );
+}
+
+function PermissionModeCard({ status, onDone }: { status: Status; onDone: () => void }) {
+  const [picked, setPicked] = useState<WebMode>(status.permissionMode);
+  const [understood, setUnderstood] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const changed = picked !== status.permissionMode;
+  const blocked = picked === "bypassPermissions" && !understood;
+
+  const save = () => {
+    setBusy(true);
+    setErr(null);
+    setSaved(false);
+    sendJSON("/api/permission-mode", "POST", { mode: picked })
+      .then(() => {
+        setSaved(true);
+        setUnderstood(false);
+        onDone();
+      })
+      .catch((e: Error) => setErr(e.message))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <Card title="AI 권한 모드">
+      <p className="muted">
+        AI가 작업 중에 얼마나 자주 확인을 받을지 정해요. 여기서 고른 모드는 <b>새로 시작하는 작업</b>에 적용돼요. 진행 중인 작업은 작업 제목 옆의 ‘권한’에서
+        바로 바꿀 수 있어요. 작업 폴더를 신뢰했다면 어느 모드에서도 설정 파일의 거부 규칙(예: <code>.env</code> 읽기 금지)은 지켜져요.
+      </p>
+      {WEB_MODES.map((m) => {
+        const t = MODE_TEXT[m]!;
+        const disabled = m === "bypassPermissions" && !status.bypassAllowed;
+        return (
+          <label key={m} className={`option risk-${t.risk} ${picked === m ? "on" : ""} ${disabled ? "disabled" : ""}`}>
+            <input type="radio" name="permission-mode" checked={picked === m} disabled={disabled} onChange={() => setPicked(m)} />
+            <span>
+              <b>{t.label}</b>
+              {m === status.permissionMode && <span className="chip">현재 기본값</span>}
+              {m === "acceptEdits" && <span className="chip st-applied">추천</span>}
+              <span className="muted small option-desc">{t.description}</span>
+              {disabled && (
+                <span className="small option-desc warn-text">
+                  Docker로 실행할 때만 쓸 수 있어요. 컨테이너 밖에서는 AI가 이 컴퓨터의 다른 파일까지 건드릴 수 있어서 막아 두었어요.
+                </span>
+              )}
+            </span>
+          </label>
+        );
+      })}
+      {picked === "bypassPermissions" && changed && (
+        <label className={`option ${understood ? "on" : ""}`}>
+          <input type="checkbox" checked={understood} onChange={(e) => setUnderstood(e.target.checked)} />
+          <span>
+            <b>위험을 이해했어요</b>
+            <span className="muted small option-desc">
+              채용 공고는 누구나 쓸 수 있는 외부 텍스트예요. 확인을 생략하면 공고에 숨겨진 지시가 AI를 움직여 파일을 지우거나 내용을 밖으로 보낼 수 있어요.
+            </span>
+          </span>
+        </label>
+      )}
+      <div className="row wrap">
+        <button className={`btn ${picked === "bypassPermissions" ? "danger" : "primary"}`} disabled={!changed || blocked || busy} onClick={save}>
+          {busy ? "저장하는 중…" : "기본 모드로 저장"}
+        </button>
+        {saved && !changed && <span className="ok small">저장했어요. 새 작업부터 적용돼요.</span>}
+      </div>
+      <ErrorBox error={err} />
     </Card>
   );
 }
@@ -233,6 +307,10 @@ export function Settings() {
               <span>작업 폴더</span>
               <b>{s.trusted ? "신뢰함" : "신뢰 전"}</b>
             </div>
+            <div className={`stat ${s.permissionMode === "bypassPermissions" ? "warn" : ""}`}>
+              <span>AI 권한</span>
+              <b>{MODE_TEXT[s.permissionMode]?.label ?? s.permissionMode}</b>
+            </div>
             <div className={`stat ${s.fileAccess === "secure" ? "" : "warn"}`}>
               <span>파일 열기</span>
               <b>{s.fileAccess === "secure" ? "사용 가능" : s.fileAccess === "insecure" ? "사용 가능 (안전 검사 약함)" : "막힘"}</b>
@@ -264,6 +342,8 @@ export function Settings() {
           )}
 
           {!s.trusted && <TrustCard status={s} onDone={status.reload} />}
+
+          <PermissionModeCard status={s} onDone={status.reload} />
 
           <ResetCard />
 

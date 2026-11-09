@@ -87,6 +87,8 @@ documents/applications/**
 documents/postings/**
 # Personal profile overlays written by /setup (CLAUDE.md, "Personal Data Storage").
 documents/profile/**
+# Files dropped into the web UI's chat or task panel (screenshots, postings, CVs).
+documents/attachments/**
 # Belt-and-braces, not the primary guard: nothing writes here. Prep packs land
 # in documents/applications/<company>_<role>/, covered above. Kept because
 # tools/security_guards.py pins it in REQUIRED_IGNORE_RULES.

@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ChatEvent, LiveEvent, RetryInfo, SessionState } from "../server/agent.ts";
+import type { WebMode } from "../server/modes.ts";
 import { commandLabel } from "./labels.ts";
 import { panel } from "./panel.ts";
 
-export type { ChatEvent, LiveEvent, RetryInfo, SessionState };
+export type { ChatEvent, LiveEvent, RetryInfo, SessionState, WebMode };
+
+export const WEB_MODES: WebMode[] = ["default", "acceptEdits", "auto", "bypassPermissions"];
 
 export type SessionSummary = {
   id: string;
   sdkSessionId: string | null;
   title: string;
   kind: string;
+  mode: WebMode;
   state: SessionState;
   retry: RetryInfo | null;
   createdAt: number;
@@ -112,7 +116,36 @@ export function useActiveSessions(): SessionSummary[] {
   return useSyncExternalStore(subscribeActive, readActive);
 }
 
-export const fileUrl = (path: string) => `/api/file?path=${encodeURIComponent(path)}`;
+export const fileUrl = (path: string, download = false) => `/api/file?path=${encodeURIComponent(path)}${download ? "&download=1" : ""}`;
+
+export const zipUrl = (paths: string[], name: string) =>
+  `/api/download?${new URLSearchParams([...paths.map((p): [string, string] => ["path", p]), ["name", name]])}`;
+
+export const fileName = (path: string) => path.split("/").pop() ?? path;
+
+export type Uploaded = { path: string; name: string; size: number };
+
+export async function uploadFile(dir: string, file: File): Promise<Uploaded> {
+  const form = new FormData();
+  form.set("dir", dir);
+  form.set("file", file);
+  return parse<Uploaded>(await fetch("/api/upload", { method: "POST", body: form }));
+}
+
+// Saves text the AI wrote (a reply, a whole conversation) as a file.
+export function downloadText(name: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export function stamp(d = new Date()) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
 
 export function safeHttpUrl(url: unknown): string | null {
   if (typeof url !== "string") return null;
@@ -126,10 +159,10 @@ export function safeHttpUrl(url: unknown): string | null {
 
 export type TaskMeta = { title?: string; kind?: string };
 
-export async function runCommand(prompt: string, meta: TaskMeta = {}) {
+export async function runCommand(prompt: string, meta: TaskMeta = {}, attachments: string[] = []) {
   const title = meta.title ?? commandLabel(prompt) ?? undefined;
   const kind = meta.kind ?? /^\/([a-z][a-z-]*)/.exec(prompt)?.[1];
-  const s = await sendJSON<SessionSummary>("/api/sessions", "POST", { prompt, title, kind });
+  const s = await sendJSON<SessionSummary>("/api/sessions", "POST", { prompt, title, kind, ...(attachments.length ? { attachments } : {}) });
   panel.show(s.id);
   return s;
 }

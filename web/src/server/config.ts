@@ -14,3 +14,7 @@ export const EXTRA_HOSTS = (process.env.ALLOWED_HOSTS ?? "")
 
 export const UPLOAD_LIMIT_BYTES = 20 * 1024 * 1024;
 export const DOWNLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
+// The Messages API refuses larger inline images; bigger ones go by path only.
+export const INLINE_IMAGE_LIMIT_BYTES = 5 * 1024 * 1024;
+export const MAX_ATTACHMENTS = 10;
+export const ZIP_LIMIT_BYTES = 200 * 1024 * 1024;

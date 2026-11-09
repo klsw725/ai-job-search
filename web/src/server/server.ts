@@ -1,21 +1,36 @@
 import { basename, extname, join } from "node:path";
 import type { ServerWebSocket } from "bun";
-import { FROZEN_MESSAGE, SessionManager, type ChatSession, type LiveEvent } from "./agent.ts";
+import { FROZEN_MESSAGE, SessionManager, type ChatSession, type LiveEvent, type OutgoingAttachment } from "./agent.ts";
 import { createReset } from "./reset.ts";
-import { HOST, PORT, REPO_DIR, UPLOAD_LIMIT_BYTES } from "./config.ts";
+import { HOST, PORT, REPO_DIR, UPLOAD_LIMIT_BYTES, ZIP_LIMIT_BYTES } from "./config.ts";
+import { queueSend, resolveAttachments } from "./attachments.ts";
+import { buildZip, uniqueNames, type ZipEntry } from "./zip.ts";
+import { BYPASS_REFUSED, bypassAllowed, isWebMode } from "./modes.ts";
 import {
   isWorkspaceTrusted,
   listCommands,
   listFiles,
   PROFILE_DIR,
   readProfile,
+  readPermissionMode,
   readProjectRules,
   readSeenJobs,
+  savePermissionMode,
   readStatus,
   readTracker,
   trustWorkspace,
 } from "./data.ts";
-import { clearFolder, fileAccessMode, hostAllowed, listFolderEntries, originAllowed, readChecked, resolveReadable, safeFileName, writeUpload } from "./security.ts";
+import {
+  clearFolder,
+  fileAccessMode,
+  hostAllowed,
+  listFolderEntries,
+  originAllowed,
+  readChecked,
+  resolveReadable,
+  safeFileName,
+  writeUpload,
+} from "./security.ts";
 
 type WsData = { subs: Set<string> };
 
@@ -27,7 +42,7 @@ const fail = (status: number, error: string) => json({ error }, status);
 // site may frame it (clickjacking). Script, style and connections stay same-origin.
 const APP_HEADERS = {
   "content-security-policy":
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   "x-frame-options": "DENY",
   "x-content-type-options": "nosniff",
   "referrer-policy": "no-referrer",
@@ -45,7 +60,22 @@ const MIME: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
 };
+
+// RFC 6266: a plain ASCII fallback plus the exact UTF-8 name for browsers that
+// read filename*, so a Korean file name downloads unchanged.
+function attachmentDisposition(name: string): string {
+  const fallback = name.replace(/[^\x20-\x7e]|["\\]/g, "_") || "download";
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
+function fileError(e: unknown): Response {
+  if ((e as NodeJS.ErrnoException).code === "EFBIG") return fail(413, "파일이 너무 커서 웹에서 열 수 없습니다 (최대 50MB)");
+  if ((e as NodeJS.ErrnoException).code === "ENOTSUP") return fail(503, "이 환경에서는 파일을 안전하게 열 수 없습니다. Docker로 실행하세요.");
+  return fail(404, "파일을 찾을 수 없거나 접근할 수 없습니다");
+}
 
 async function buildClient() {
   const result = await Bun.build({
@@ -75,11 +105,20 @@ const manager = new SessionManager(
   (session: ChatSession, ev: LiveEvent) => {
     server?.publish(`s:${session.id}`, JSON.stringify({ t: "event", id: session.id, ev }));
     if (ev.kind === "state") publishSessions(ev.state !== "running");
-    else if (ev.kind === "permission" || ev.kind === "question" || ev.kind === "resolved") publishSessions();
+    else if (ev.kind === "permission" || ev.kind === "question" || ev.kind === "resolved" || ev.kind === "mode") publishSessions();
   },
   async () => ((await isWorkspaceTrusted()) ? readProjectRules() : null),
   () => publishSessions(true),
+  () => readPermissionMode(),
 );
+
+async function setDefaultMode(req: Request) {
+  const { mode } = (await req.json().catch(() => ({}))) as { mode?: unknown };
+  if (!isWebMode(mode)) return fail(400, "알 수 없는 권한 모드입니다");
+  if (mode === "bypassPermissions" && !bypassAllowed()) return fail(403, BYPASS_REFUSED);
+  await savePermissionMode(mode);
+  return json({ mode });
+}
 
 function guard(req: Request): Response | null {
   const host = req.headers.get("host");
@@ -89,16 +128,15 @@ function guard(req: Request): Response | null {
 }
 
 async function serveFile(req: Request) {
-  const rel = new URL(req.url).searchParams.get("path") ?? "";
+  const params = new URL(req.url).searchParams;
+  const rel = params.get("path") ?? "";
   const abs = await resolveReadable(rel);
   let body: Buffer;
   try {
     if (!abs) throw new Error("not readable");
     body = await readChecked(abs);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "EFBIG") return fail(413, "파일이 너무 커서 웹에서 열 수 없습니다 (최대 50MB)");
-    if ((e as NodeJS.ErrnoException).code === "ENOTSUP") return fail(503, "이 환경에서는 파일을 안전하게 열 수 없습니다. Docker로 실행하세요.");
-    return fail(404, "파일을 찾을 수 없거나 접근할 수 없습니다");
+    return fileError(e);
   }
   const ext = extname(abs).toLowerCase();
   const type = MIME[ext] ?? "application/octet-stream";
@@ -113,8 +151,50 @@ async function serveFile(req: Request) {
   // Generated reports may carry script; run them in an opaque origin so they
   // cannot call this API (the Origin check rejects "null").
   if (ext === ".html") headers["content-security-policy"] = "sandbox allow-scripts; frame-ancestors 'self'";
-  if (type === "application/octet-stream") headers["content-disposition"] = "attachment";
+  if (type === "application/octet-stream" || params.get("download") === "1") headers["content-disposition"] = attachmentDisposition(basename(abs));
   return new Response(new Uint8Array(body.buffer as ArrayBuffer, body.byteOffset, body.byteLength), { headers });
+}
+
+const ZIP_MAX_FILES = 200;
+
+// "Download all": the same per-file checks as /api/file, bundled as one ZIP.
+async function serveZip(req: Request) {
+  const params = new URL(req.url).searchParams;
+  const rels = [...new Set(params.getAll("path"))];
+  if (rels.length === 0) return fail(400, "내려받을 파일이 없습니다");
+  if (rels.length > ZIP_MAX_FILES) return fail(413, `한 번에 ${ZIP_MAX_FILES}개까지 내려받을 수 있습니다`);
+  const files: { name: string; data: Buffer }[] = [];
+  let total = 0;
+  for (const rel of rels) {
+    const abs = await resolveReadable(rel);
+    try {
+      if (!abs) throw new Error("not readable");
+      const data = await readChecked(abs);
+      total += data.length;
+      if (total > ZIP_LIMIT_BYTES) return fail(413, "파일을 합치면 너무 커서 한 번에 내려받을 수 없습니다 (최대 200MB)");
+      files.push({ name: basename(abs), data });
+    } catch (e) {
+      return fileError(e);
+    }
+  }
+  const names = uniqueNames(files.map((f) => f.name));
+  const entries: ZipEntry[] = files.map((f, i) => ({ name: names[i]!, data: f.data }));
+  const zipName = `${(safeFileName(params.get("name") ?? "") ?? "AI-결과물").replace(/\.zip$/i, "")}.zip`;
+  return new Response(buildZip(entries), {
+    headers: {
+      "content-type": "application/zip",
+      "content-disposition": attachmentDisposition(zipName),
+      "x-content-type-options": "nosniff",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+function attachmentName(name: string): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  return `${stamp}-${crypto.randomUUID().slice(0, 4)}-${name}`.slice(0, 200);
 }
 
 async function upload(req: Request) {
@@ -122,10 +202,13 @@ async function upload(req: Request) {
   const file = form.get("file");
   if (!(file instanceof File)) return fail(400, "파일이 없습니다");
   if (file.size > UPLOAD_LIMIT_BYTES) return fail(413, "파일이 너무 큽니다 (최대 20MB)");
-  const name = safeFileName(file.name);
-  if (!name) return fail(400, "파일 이름을 쓸 수 없습니다");
+  const dir = String(form.get("dir") ?? "");
+  const safe = safeFileName(file.name);
+  if (!safe) return fail(400, "파일 이름을 쓸 수 없습니다");
+  // Chat attachments never overwrite each other (every pasted image is "image.png").
+  const name = dir === "attachments" ? attachmentName(safe) : safe;
   try {
-    return json({ path: await writeUpload(String(form.get("dir") ?? ""), name, new Uint8Array(await file.arrayBuffer())) });
+    return json({ path: await writeUpload(dir, name, new Uint8Array(await file.arrayBuffer())), name: safe, size: file.size });
   } catch (e) {
     return fail(400, e instanceof Error ? e.message : String(e));
   }
@@ -133,14 +216,21 @@ async function upload(req: Request) {
 
 async function createSession(req: Request) {
   if (manager.isFrozen) return fail(409, FROZEN_MESSAGE);
-  const body = (await req.json().catch(() => ({}))) as { resume?: string; prompt?: string; title?: unknown; kind?: unknown };
+  const body = (await req.json().catch(() => ({}))) as { resume?: string; prompt?: string; title?: unknown; kind?: unknown; attachments?: unknown };
   const title = typeof body.title === "string" && body.title.trim() ? body.title.trim().slice(0, 80) : undefined;
   const kind = typeof body.kind === "string" && /^[a-z][a-z-]{0,23}$/.test(body.kind) ? body.kind : undefined;
+  let attachments: OutgoingAttachment[];
+  try {
+    attachments = await resolveAttachments(body.attachments);
+  } catch (e) {
+    return fail(400, e instanceof Error ? e.message : String(e));
+  }
   if (manager.isFrozen) return fail(409, FROZEN_MESSAGE);
   const session = body.resume ? await manager.resume(body.resume) : await manager.create({ title, kind });
-  if (body.prompt?.trim()) {
+  const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+  if (prompt || attachments.length) {
     if (manager.isFrozen) return fail(409, FROZEN_MESSAGE);
-    session.send(body.prompt.trim());
+    session.send(prompt, attachments);
   }
   publishSessions();
   return json(session.summary());
@@ -174,11 +264,13 @@ async function api(req: Request, path: string): Promise<Response> {
   if (method === "GET" && path === "/api/jobs") return json(await readSeenJobs());
   if (method === "GET" && path === "/api/files") return json(await listFiles());
   if (method === "GET" && path === "/api/file") return serveFile(req);
+  if (method === "GET" && path === "/api/download") return serveZip(req);
   if (method === "GET" && path === "/api/profile") return json(await readProfile());
   if (method === "GET" && path === "/api/commands") return json(await listCommands());
   if (method === "POST" && path === "/api/upload") return upload(req);
   if (method === "GET" && path === "/api/reset") return json(await resetter.preview());
   if (method === "POST" && path === "/api/reset") return reset(req);
+  if (method === "POST" && path === "/api/permission-mode") return setDefaultMode(req);
   if (method === "POST" && path === "/api/trust") {
     await trustWorkspace();
     return json({ ok: true });
@@ -199,10 +291,11 @@ async function api(req: Request, path: string): Promise<Response> {
 type ClientMsg =
   | { t: "subscribe"; id: string }
   | { t: "unsubscribe"; id: string }
-  | { t: "send"; id: string; text: string }
+  | { t: "send"; id: string; text: string; attachments?: unknown }
   | { t: "permission"; id: string; requestId: string; allow: boolean; always?: boolean }
   | { t: "answer"; id: string; requestId: string; answers: Record<string, string> }
-  | { t: "interrupt"; id: string };
+  | { t: "interrupt"; id: string }
+  | { t: "mode"; id: string; mode: unknown };
 
 function onMessage(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
   let msg: ClientMsg;
@@ -227,9 +320,12 @@ function onMessage(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
         ws.unsubscribe(`s:${session.id}`);
         ws.data.subs.delete(session.id);
         break;
-      case "send":
-        if (typeof msg.text === "string" && msg.text.trim()) session.send(msg.text.trim());
+      case "send": {
+        const text = typeof msg.text === "string" ? msg.text.trim() : "";
+        if (!text && msg.attachments === undefined) break;
+        queueSend(session, text, msg.attachments, (e) => ws.send(JSON.stringify({ t: "error", id: msg.id, text: e instanceof Error ? e.message : String(e) })));
         break;
+      }
       case "permission":
         session.answerPermission(msg.requestId, Boolean(msg.allow), Boolean(msg.always));
         break;
@@ -238,6 +334,13 @@ function onMessage(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
         break;
       case "interrupt":
         void session.interrupt();
+        break;
+      case "mode":
+        if (!isWebMode(msg.mode)) throw new Error("알 수 없는 권한 모드입니다");
+        session
+          .setMode(msg.mode)
+          .then(() => publishSessions())
+          .catch((e: unknown) => ws.send(JSON.stringify({ t: "error", id: msg.id, text: `권한 모드를 바꾸지 못했어요: ${e instanceof Error ? e.message : String(e)}` })));
         break;
     }
   } catch (e) {

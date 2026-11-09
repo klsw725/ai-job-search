@@ -5,6 +5,7 @@ type Fake = {
   emit: (m: unknown) => void;
   end: () => void;
   inputs: unknown[];
+  modes: string[];
 };
 const fakes: Fake[] = [];
 const deleted: string[] = [];
@@ -18,6 +19,7 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
     const fake: Fake = {
       options,
       inputs: [],
+      modes: [],
       emit: (m) => {
         queue.push(m);
         wake?.();
@@ -40,6 +42,9 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
         }
       },
       interrupt: async () => undefined,
+      setPermissionMode: async (mode: string) => {
+        fake.modes.push(mode);
+      },
       close: () => fake.end(),
     };
   },
@@ -160,6 +165,66 @@ describe("ChatSession", () => {
     expect(fakes.at(-1)!.options.allowedTools).toEqual(["Bash(ls:*)"]);
     expect(fakes.at(-1)!.options.disallowedTools).toEqual(["Read(.env)"]);
     s.close();
+  });
+});
+
+describe("permission modes", () => {
+  test("a session starts in the mode it was given and can switch while it runs", async () => {
+    const s = new ChatSession(() => {}, () => {}, { mode: "acceptEdits" });
+    const fake = fakes.at(-1)!;
+    expect(fake.options.permissionMode).toBe("acceptEdits");
+    expect(s.summary().mode).toBe("acceptEdits");
+    await s.setMode("auto");
+    expect(fake.modes).toEqual(["auto"]);
+    expect(s.summary().mode).toBe("auto");
+    s.close();
+  });
+
+  test("skipping every check is refused outside a container unless opted in", async () => {
+    const prev = process.env.AJS_ALLOW_BYPASS;
+    delete process.env.AJS_ALLOW_BYPASS;
+    try {
+      const { bypassAllowed } = await import("../src/server/modes.ts");
+      if (bypassAllowed()) return; // running inside Docker
+      const s = new ChatSession(() => {}, () => {}, { mode: "bypassPermissions" });
+      const fake = fakes.at(-1)!;
+      expect(fake.options.permissionMode).toBe("default");
+      expect(fake.options.allowDangerouslySkipPermissions).toBe(false);
+      await expect(s.setMode("bypassPermissions")).rejects.toThrow("Docker");
+      expect(fake.modes).toEqual([]);
+      s.close();
+
+      process.env.AJS_ALLOW_BYPASS = "1";
+      const t = new ChatSession(() => {}, () => {}, { mode: "bypassPermissions" });
+      expect(fakes.at(-1)!.options.permissionMode).toBe("bypassPermissions");
+      expect(fakes.at(-1)!.options.allowDangerouslySkipPermissions).toBe(true);
+      t.close();
+    } finally {
+      if (prev === undefined) delete process.env.AJS_ALLOW_BYPASS;
+      else process.env.AJS_ALLOW_BYPASS = prev;
+    }
+  });
+
+  test("the mode the SDK reports wins over the one that was asked for", async () => {
+    const events: any[] = [];
+    const s = new ChatSession((_, ev) => events.push(ev), () => {}, { mode: "auto" });
+    const fake = fakes.at(-1)!;
+    fake.emit({ type: "system", subtype: "init", session_id: "x", permissionMode: "default" });
+    await tick();
+    expect(s.mode).toBe("default");
+    fake.emit({ type: "system", subtype: "status", status: null, permissionMode: "acceptEdits" });
+    await tick();
+    expect(s.summary().mode).toBe("acceptEdits");
+    expect(events.filter((e) => e.kind === "mode").map((e) => e.mode)).toEqual(["default", "acceptEdits"]);
+    s.close();
+  });
+
+  test("new sessions take the saved default mode", async () => {
+    const m = new SessionManager(() => {}, async () => null, () => {}, async () => "auto");
+    const s = await m.create();
+    expect(fakes.at(-1)!.options.permissionMode).toBe("auto");
+    expect(s.mode).toBe("auto");
+    m.closeAll();
   });
 });
 

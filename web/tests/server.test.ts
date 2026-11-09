@@ -7,7 +7,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { messageToEvents } from "../src/server/agent.ts";
 import { parseCsv } from "../src/server/csv.ts";
-import { displayBaseUrl, isWorkspaceTrusted, listFiles, readProfile, readProjectRules, readSeenJobs, readTracker, trustWorkspace } from "../src/server/data.ts";
+import { existsSync } from "node:fs";
+import {
+  displayBaseUrl,
+  isWorkspaceTrusted,
+  listFiles,
+  readPermissionMode,
+  readProfile,
+  readProjectRules,
+  readSeenJobs,
+  readTracker,
+  savePermissionMode,
+  trustWorkspace,
+} from "../src/server/data.ts";
 import { clearFolder, hostAllowed, listFolderEntries, mountPoints, mountsInTheWay, PartialDeleteError, nextChunkSize, normalizeRel, originAllowed, readChecked, resolveReadable, safeFileName, writeUpload } from "../src/server/security.ts";
 import { renderMarkdown } from "../src/client/markdown.ts";
 import { isVetoed, recommended } from "../src/client/jobs.ts";
@@ -168,6 +180,31 @@ describe("workspace trust", () => {
     } finally {
       if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
       else process.env.CLAUDE_CONFIG_DIR = prev;
+    }
+  });
+
+  test("the default permission mode is saved per repo beside the trust record", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ajs-config-"));
+    const prev = process.env.CLAUDE_CONFIG_DIR;
+    const prevBypass = process.env.AJS_ALLOW_BYPASS;
+    process.env.CLAUDE_CONFIG_DIR = dir;
+    try {
+      expect(await readPermissionMode("/repo/a")).toBe("default");
+      await trustWorkspace("/repo/a");
+      await savePermissionMode("acceptEdits", "/repo/a");
+      expect(await readPermissionMode("/repo/a")).toBe("acceptEdits");
+      expect(await readPermissionMode("/repo/b")).toBe("default");
+      expect(await isWorkspaceTrusted("/repo/a")).toBe(true);
+      process.env.AJS_ALLOW_BYPASS = "1";
+      await savePermissionMode("bypassPermissions", "/repo/a");
+      expect(await readPermissionMode("/repo/a")).toBe("bypassPermissions");
+      delete process.env.AJS_ALLOW_BYPASS;
+      if (!existsSync("/.dockerenv")) expect(await readPermissionMode("/repo/a")).toBe("default");
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = prev;
+      if (prevBypass === undefined) delete process.env.AJS_ALLOW_BYPASS;
+      else process.env.AJS_ALLOW_BYPASS = prevBypass;
     }
   });
 

@@ -1,7 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
-import { getJSON, live, useActiveSessions, useFetch, type ChatEvent, type PastSession, type RetryInfo, type SessionState } from "./api.ts";
-import { describePermission, describeTool, resultErrorText } from "./labels.ts";
-import type { Step } from "./progress.ts";
+import {
+  WEB_MODES,
+  downloadText,
+  fileName,
+  fileUrl,
+  getJSON,
+  live,
+  stamp,
+  useActiveSessions,
+  useFetch,
+  zipUrl,
+  type ChatEvent,
+  type PastSession,
+  type RetryInfo,
+  type SessionState,
+  type WebMode,
+} from "./api.ts";
+import { attachmentLabel } from "./attach.tsx";
+import { MODE_TEXT, describePermission, describeTool, resultErrorText } from "./labels.ts";
+import { sessionOutputs, type Step } from "./progress.ts";
+import { Icon } from "./ui.tsx";
 
 export type Question = Extract<ChatEvent, { kind: "question" }>["questions"][number];
 type Assistant = Extract<ChatEvent, { kind: "assistant" }>;
@@ -39,6 +57,7 @@ export function useSession(id: string | null) {
         const ev = m.ev;
         if (ev.kind === "delta") setDraft((d) => d + ev.text);
         else if (ev.kind === "retry") setRetry(ev.retry);
+        else if (ev.kind === "mode") return;
         else if (ev.kind === "state") {
           setState(ev.state);
           if (ev.state !== "running") {
@@ -174,25 +193,58 @@ const OUTCOME_LABEL: Record<string, string> = {
 type Permission = Extract<ChatEvent, { kind: "permission" }>;
 type QuestionEvent = Extract<ChatEvent, { kind: "question" }>;
 
-let repoRoot: Promise<string | null> | null = null;
+type StaticStatus = { repo: string; bypassAllowed: boolean };
+let staticStatus: Promise<StaticStatus | null> | null = null;
 
-export function useRepoRoot() {
-  const [root, setRoot] = useState<string | null>(null);
+// Facts that do not change while the server runs, fetched once.
+function useStaticStatus() {
+  const [status, setStatus] = useState<StaticStatus | null>(null);
   useEffect(() => {
     // A failed lookup is not cached, so the next card retries it.
-    repoRoot ??= getJSON<{ repo: string }>("/api/status")
-      .then((s) => s.repo)
-      .catch(() => {
-        repoRoot = null;
-        return null;
-      });
+    staticStatus ??= getJSON<StaticStatus>("/api/status").catch(() => {
+      staticStatus = null;
+      return null;
+    });
     let alive = true;
-    void repoRoot.then((r) => alive && setRoot(r));
+    void staticStatus.then((s) => alive && setStatus(s));
     return () => {
       alive = false;
     };
   }, []);
-  return root;
+  return status;
+}
+
+export function useRepoRoot() {
+  return useStaticStatus()?.repo ?? null;
+}
+
+export function useBypassAllowed() {
+  return useStaticStatus()?.bypassAllowed ?? false;
+}
+
+// Switches one running task's permission mode; it applies from the next tool call.
+export function ModeSelect({ sessionId, mode }: { sessionId: string; mode: WebMode }) {
+  const bypass = useBypassAllowed();
+  return (
+    <label className={`mode-select risk-${MODE_TEXT[mode]?.risk ?? "low"}`} title={MODE_TEXT[mode]?.description}>
+      <span className="muted small">권한</span>
+      <select
+        value={mode}
+        onChange={(e) => {
+          const next = e.target.value as WebMode;
+          if (next === "bypassPermissions" && !confirm(`${MODE_TEXT[next]!.description}\n\n이 작업을 확인 없이 진행할까요?`)) return;
+          live.send({ t: "mode", id: sessionId, mode: next });
+        }}
+      >
+        {WEB_MODES.map((m) => (
+          <option key={m} value={m} disabled={m === "bypassPermissions" && !bypass}>
+            {MODE_TEXT[m]!.short}
+            {m === "bypassPermissions" && !bypass ? " (Docker 전용)" : ""}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
 }
 
 export function PermissionCard({ sessionId, event, outcome }: { sessionId: string; event: Permission; outcome?: string }) {
@@ -210,6 +262,11 @@ export function PermissionCard({ sessionId, event, outcome }: { sessionId: strin
           <pre className="pre">{f.text || "(비어 있음)"}</pre>
         </div>
       ))}
+      {!outcome && (
+        <div className="muted small">
+          확인을 줄이려면 이 작업 제목 옆의 <b>권한</b>을 바꾸거나, <a href="#/settings">설정</a>에서 기본 권한 모드를 골라 주세요.
+        </div>
+      )}
       <details className="small">
         <summary className="muted">기술 정보</summary>
         <div className="muted">{event.toolName}{event.reason && ` — ${event.reason}`}</div>
@@ -260,6 +317,88 @@ export function ResultLine({ event }: { event: Extract<ChatEvent, { kind: "resul
       {facts.length > 0 && <span>{facts.join(" · ")}</span>}
     </details>
   );
+}
+
+export function useOutputs(events: ChatEvent[], since: number | null) {
+  const files = useFetch<{ path: string; mtime: number }[]>("/api/files", { live: true });
+  const root = useRepoRoot();
+  return useMemo(
+    () => (since === null || root === null ? [] : sessionOutputs(events, files.data ?? [], since, root)),
+    [events, files.data, since, root],
+  );
+}
+
+// Files the AI produced in this task, each viewable and downloadable, plus
+// the whole set as one ZIP.
+export function OutputFiles({ outputs, zipName, title = "이번 작업에서 만든 파일" }: { outputs: [string, string][]; zipName: string; title?: string }) {
+  if (outputs.length === 0) return null;
+  return (
+    <div className="outputs">
+      <div className="outputs-head">
+        <b>{title}</b>
+        {outputs.length > 1 && (
+          <a className="btn secondary small-btn" href={zipUrl(outputs.map(([p]) => p), zipName)} download>
+            <Icon name="download" size={14} /> 모두 받기 (ZIP)
+          </a>
+        )}
+      </div>
+      <ul className="output-list">
+        {outputs.map(([path, label]) => (
+          <li key={path} className="output-item">
+            <span className="output-icon"><Icon name="file" /></span>
+            <span className="grow">
+              <b>{label}</b>
+              <span className="muted small ellipsis block">{fileName(path)}</span>
+            </span>
+            <a className="btn ghost small-btn" href={fileUrl(path)} target="_blank" rel="noopener noreferrer" title="새 탭에서 열기">
+              <Icon name="open" size={14} /> 열기
+            </a>
+            <a className="btn secondary small-btn" href={fileUrl(path, true)} download title="내 컴퓨터에 저장">
+              <Icon name="download" size={14} /> 받기
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// Copy or save one AI reply: much of the work (fit reviews, interview notes)
+// lives only in the reply text, not in a file.
+export function ReplyActions({ text, name }: { text: string; name: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="reply-actions">
+      <button
+        type="button"
+        className="btn ghost small-btn"
+        onClick={() =>
+          void navigator.clipboard.writeText(text).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          })
+        }
+      >
+        <Icon name={copied ? "check" : "copy"} size={14} /> {copied ? "복사했어요" : "복사"}
+      </button>
+      <button type="button" className="btn ghost small-btn" onClick={() => downloadText(`${name}-${stamp()}.md`, text)}>
+        <Icon name="download" size={14} /> 저장 (.md)
+      </button>
+    </div>
+  );
+}
+
+export function conversationMarkdown(title: string, events: ChatEvent[]): string {
+  const parts = [`# ${title}`, `_${new Date().toLocaleString("ko-KR")} 내보냄_`];
+  for (const e of events) {
+    if (e.kind === "user") {
+      const files = (e.attachments ?? []).map((p) => `- 첨부: ${attachmentLabel(p)}`).join("\n");
+      parts.push(`## 나\n\n${e.text}${files ? `\n\n${files}` : ""}`);
+    } else if (e.kind === "assistant" && !e.sub && e.text.trim()) {
+      parts.push(`## AI\n\n${e.text}`);
+    }
+  }
+  return `${parts.join("\n\n")}\n`;
 }
 
 export function RetryNotice({ retry }: { retry: RetryInfo }) {

@@ -25,6 +25,29 @@ export function commandLabel(prompt: string): string | null {
   return COMMAND_LABEL[m[1]!]?.label ?? null;
 }
 
+export const MODE_TEXT: Record<string, { label: string; short: string; description: string; risk: "low" | "medium" | "high" }> = {
+  default: { label: "매번 확인", short: "매번 확인", description: "파일 쓰기, 프로그램 실행, 웹 읽기처럼 미리 허용하지 않은 작업은 하나하나 물어봐요.", risk: "low" },
+  acceptEdits: {
+    label: "파일 작업은 자동",
+    short: "파일 자동",
+    description:
+      "작업 폴더 안의 파일을 만들고 고치고 옮기고 지우는 일은 묻지 않고 바로 해요. 그런 일을 하는 명령(rm, mv, cp, sed 등)도 포함돼요. 그 밖의 프로그램 실행과 웹 접근은 물어봐요.",
+    risk: "low",
+  },
+  auto: {
+    label: "AI가 판단",
+    short: "AI 판단",
+    description: "별도 검사 모델이 안전한 작업은 바로 승인하고, 위험하거나 애매한 것만 물어봐요. 연결한 AI 서버나 요금제에 따라 쓸 수 없을 수도 있어요.",
+    risk: "medium",
+  },
+  bypassPermissions: {
+    label: "모든 확인 생략",
+    short: "확인 생략",
+    description: "아무것도 묻지 않고 바로 실행해요. 공고 페이지에 숨겨진 지시가 있으면 AI가 확인 없이 프로그램을 실행할 수 있어요.",
+    risk: "high",
+  },
+};
+
 export const STATUS_LABEL: Record<string, string> = {
   drafted: "작성됨",
   applied: "지원함",

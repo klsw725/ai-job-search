@@ -34,7 +34,18 @@ export function originAllowed(origin: string | null, host: string | null, requir
 export const READ_ROOTS = ["cv", "cover_letters", "documents", "reports", "upskill", "company_research", "templates"];
 const READ_FILES = ["CLAUDE.md", "job_search_tracker.csv"];
 
-export const UPLOAD_DIRS = ["cv", "linkedin", "diplomas", "references", "projects", "postings"];
+export const UPLOAD_DIRS = ["cv", "linkedin", "diplomas", "references", "projects", "postings", "attachments"];
+
+// Files dropped into a chat or task. Only these may be handed to the agent as
+// attachments, so a message cannot smuggle in any other readable file.
+export const ATTACHMENT_DIR = "documents/attachments";
+
+const inAttachmentDir = (parts: string[]) => parts.length === 3 && `${parts[0]}/${parts[1]}` === ATTACHMENT_DIR;
+
+export function isAttachmentPath(rel: unknown): rel is string {
+  const parts = typeof rel === "string" ? normalizeRel(rel) : null;
+  return parts !== null && inAttachmentDir(parts);
+}
 
 function allowedRel(parts: string[]): boolean {
   if (parts.length === 0 || parts.some((p) => p === "" || p === ".." || p.startsWith(".env") || p === ".git" || p === "node_modules")) {
@@ -76,6 +87,17 @@ async function realInside(rel: string, repo: string, accept: (parts: string[]) =
 export async function resolveReadable(rel: string, repo = REPO_DIR): Promise<string | null> {
   const parts = normalizeRel(rel);
   return parts ? realInside(parts.join("/"), repo, allowedRel) : null;
+}
+
+// An attachment must be spelled canonically and its real target must also be
+// a file in the attachment folder: a symlink there cannot pass a profile file
+// (readable through the file API, but not something the user attached) to the model.
+export async function resolveAttachment(rel: unknown, repo = REPO_DIR): Promise<{ rel: string; abs: string } | null> {
+  if (!isAttachmentPath(rel)) return null;
+  const canonical = normalizeRel(rel)!.join("/");
+  if (canonical !== rel) return null;
+  const abs = await realInside(canonical, repo, inAttachmentDir);
+  return abs ? { rel: canonical, abs } : null;
 }
 
 // Same confinement for the server's own fixed-path reads (tracker, profile,

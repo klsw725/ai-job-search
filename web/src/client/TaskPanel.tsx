@@ -1,27 +1,20 @@
 import { useMemo, useRef, useState } from "react";
-import { fileUrl, live, useFetch, type SessionSummary } from "./api.ts";
+import { live, type SessionSummary } from "./api.ts";
+import { AttachButton, AttachmentTray, DropZone, useAttachments } from "./attach.tsx";
 import { resultErrorText } from "./labels.ts";
 import { panel, usePanel } from "./panel.ts";
-import { currentActivity, lastReply, progressOf, sessionOutputs } from "./progress.ts";
-import { PermissionCard, Progress, QuestionCard, RetryNotice, useRepoRoot, useResolved, useSession, useToolResults } from "./session.tsx";
+import { currentActivity, lastReply, progressOf } from "./progress.ts";
+import { ModeSelect, OutputFiles, PermissionCard, Progress, QuestionCard, ReplyActions, RetryNotice, useOutputs, useResolved, useSession, useToolResults } from "./session.tsx";
 import { ErrorBox, Markdown } from "./ui.tsx";
 
-function useOutputs(events: ReturnType<typeof useSession>["events"], since: number | null) {
-  const files = useFetch<{ path: string; mtime: number }[]>("/api/files", { live: true });
-  const root = useRepoRoot();
-  return useMemo(
-    () => (since === null || root === null ? [] : sessionOutputs(events, files.data ?? [], since, root)),
-    [events, files.data, since, root],
-  );
-}
-
-function TaskView({ id, since }: { id: string; since: number | null }) {
+function TaskView({ id, since, title }: { id: string; since: number | null; title: string }) {
   const { events, state, retry, draft, error } = useSession(id);
   const results = useToolResults(events);
   const resolved = useResolved(events);
   const steps = useMemo(() => progressOf(events), [events]);
   const outputs = useOutputs(events, since);
   const [text, setText] = useState("");
+  const files = useAttachments();
 
   const waiting = events.filter((e) => (e.kind === "permission" || e.kind === "question") && !resolved.has(e.requestId));
   const turn = events.slice(events.findLastIndex((e) => e.kind === "user") + 1);
@@ -42,11 +35,12 @@ function TaskView({ id, since }: { id: string; since: number | null }) {
     "대기 중";
   const statusClass = waiting.length ? "wait" : failure || (result?.kind === "result" && !result.ok) ? "fail" : (state ?? "");
 
+  const canSend = (text.trim() !== "" || files.paths.length > 0) && !files.uploading;
   const send = () => {
-    const t = text.trim();
-    if (!t) return;
-    live.send({ t: "send", id, text: t });
+    if (!canSend) return;
+    live.send({ t: "send", id, text: text.trim(), ...(files.paths.length ? { attachments: files.paths } : {}) });
     setText("");
+    files.clear();
   };
 
   return (
@@ -71,38 +65,36 @@ function TaskView({ id, since }: { id: string; since: number | null }) {
         <div className={`task-reply ${succeeded ? "final" : ""}`}>
           <div className="muted small">{succeeded ? "결과" : "AI 메시지"}</div>
           <Markdown text={reply} />
+          {!draft && <ReplyActions text={reply} name={title} />}
         </div>
       )}
 
-      {outputs.length > 0 && (
-        <div className="stack">
-          <div className="muted small">이번 작업에서 만든 파일</div>
-          <div className="row wrap">
-            {outputs.map(([path, label]) => (
-              <a key={path} className="btn secondary" href={fileUrl(path)} target="_blank" rel="noopener noreferrer" title={path}>
-                {label} 열기
-              </a>
-            ))}
-          </div>
-        </div>
-      )}
+      <OutputFiles outputs={outputs} zipName={title} />
 
       {state && state !== "closed" && (
-        <div className="task-reply-box">
-          <textarea
-            rows={2}
-            value={text}
-            placeholder={state === "running" ? "추가로 전할 말이 있으면 적어 주세요" : "더 부탁할 일이 있으면 적어 주세요 (예: 커버레터를 더 짧게)"}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                send();
-              }
-            }}
-          />
-          <button className="btn primary" disabled={!text.trim()} onClick={send}>보내기</button>
-        </div>
+        <DropZone className="task-compose" onFiles={files.add}>
+          <AttachmentTray attachments={files} />
+          <div className="task-reply-box">
+            <textarea
+              rows={2}
+              value={text}
+              placeholder={state === "running" ? "추가로 전할 말이나 파일이 있으면 보내 주세요" : "더 부탁할 일이 있으면 적어 주세요 (예: 커버레터를 더 짧게)"}
+              onChange={(e) => setText(e.target.value)}
+              onPaste={files.onPaste}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+            />
+          </div>
+          <div className="row">
+            <AttachButton onFiles={files.add} />
+            <span className="grow" />
+            <button className="btn primary" disabled={!canSend} onClick={send}>보내기</button>
+          </div>
+        </DropZone>
       )}
 
       <div className="row wrap task-foot">
@@ -145,8 +137,13 @@ export function TaskPanel({ sessions, shownElsewhere }: { sessions: SessionSumma
         <p className="muted">이 작업은 지금 왼쪽 대화 화면에 열려 있어요.</p>
       ) : sessionId ? (
         <>
-          {current && <h2 className="task-title">{current.title}</h2>}
-          <TaskView key={sessionId} id={sessionId} since={started.current.get(sessionId) ?? null} />
+          {current && (
+            <div className="task-title-row">
+              <h2 className="task-title">{current.title}</h2>
+              {current.state !== "closed" && <ModeSelect sessionId={current.id} mode={current.mode} />}
+            </div>
+          )}
+          <TaskView key={sessionId} id={sessionId} since={started.current.get(sessionId) ?? null} title={current?.title ?? "AI 작업"} />
         </>
       ) : (
         <p className="muted">진행 중인 작업이 없어요. 화면의 버튼을 누르면 AI가 여기서 일을 시작해요.</p>
