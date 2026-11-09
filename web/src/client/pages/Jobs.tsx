@@ -1,17 +1,23 @@
 import { useMemo, useState } from "react";
-import { safeHttpUrl, useFetch } from "../api.ts";
+import { safeHttpUrl, useFetch, useRuns, type Run } from "../api.ts";
+import { ApplyButton, RUN_STATE_TEXT, runStateKey } from "../apply.tsx";
+import { panel } from "../panel.ts";
+import { applicationId, canonicalStatus, columnOf } from "../pipeline.ts";
+import { trackedRow } from "../workflow.ts";
 import { GATES, fitBand, jobTab, type JobTab } from "../jobs.ts";
 import { GATE_TEXT, STATUS_LABEL, portalName } from "../labels.ts";
 import { CommandButton, EmptyState, ErrorBox, Icon, PageHeader, daysUntil } from "../ui.tsx";
 
 type Job = Record<string, unknown> & { key: string };
-type Tab = JobTab | "all";
+type Tab = JobTab | "tracked" | "all";
+type Row = Record<string, string>;
 
 const str = (v: unknown) => (v === null || v === undefined ? "" : String(v));
 const list = (v: unknown) => (Array.isArray(v) ? v.map(str).filter(Boolean) : []);
 
 const TABS: { id: Tab; label: string; hint: string }[] = [
-  { id: "recommended", label: "추천", hint: "평가를 마치고 근무지·언어·자격 조건을 통과한 공고" },
+  { id: "recommended", label: "추천", hint: "평가를 마치고 근무지·언어·자격 조건을 통과했고, 아직 지원서를 만들지 않은 공고" },
+  { id: "tracked", label: "지원서 만듦", hint: "지원서를 만들었거나 지원한 공고. 내 지원에서 단계를 관리해요" },
   { id: "unranked", label: "평가 전", hint: "아직 내 프로필과 비교하지 않은 공고" },
   { id: "excluded", label: "제외됨", hint: "점수가 낮거나 근무지·언어·자격 조건이 맞지 않는 공고" },
   { id: "closed", label: "마감·열리지 않음", hint: "마감됐거나 페이지가 열리지 않는 공고" },
@@ -72,7 +78,35 @@ function Points({ kind, title, items, open }: { kind: "plus" | "minus"; title: s
   );
 }
 
-function JobCard({ job }: { job: Job }) {
+function RunBadge({ run }: { run: Run }) {
+  const state = runStateKey(run);
+  const row = run.checks?.row;
+  const href = state === "succeeded" && row ? `#/applications/${applicationId(row)}` : `#/runs/${run.id}`;
+  if ((state === "running" || state === "awaiting") && run.sessionId) {
+    return (
+      <button className={`run-badge ${state}`} onClick={() => panel.show(run.sessionId!)}>
+        <span className="spinner" /> {RUN_STATE_TEXT[state]}
+      </button>
+    );
+  }
+  return (
+    <a className={`run-badge ${state}`} href={href}>
+      {state === "succeeded" ? <Icon name="check" size={13} /> : <Icon name="alert" size={13} />} {state === "succeeded" ? "지원서 완성 · 보기" : `${RUN_STATE_TEXT[state]} · 보기`}
+    </a>
+  );
+}
+
+function TrackedBadge({ row }: { row: Row }) {
+  const status = canonicalStatus(row.status);
+  const day = (row.date ?? "").slice(5).replace("-", "/");
+  return (
+    <a className={`tracked-badge col-${columnOf(status)}`} href={`#/applications/${applicationId(row)}`}>
+      <Icon name="clipboard" size={13} /> {STATUS_LABEL[status] ?? status} {day && <span className="muted">· {day}</span>}
+    </a>
+  );
+}
+
+function JobCard({ job, run, row, onStarted }: { job: Job; run?: Run; row?: Row; onStarted: () => void }) {
   const [open, setOpen] = useState(false);
   const url = safeHttpUrl(job.url);
   const tab = jobTab(job);
@@ -89,10 +123,12 @@ function JobCard({ job }: { job: Job }) {
   });
   // Points and notes are clamped by width, which a character count cannot
   // predict on a narrow screen, so any detail gets the toggle.
+  // An earlier application to this role has ended; a new one may be made.
+  const rowClosed = !!row && columnOf(canonicalStatus(row.status)) === "closed";
   const expandable = strengths.length > 0 || gaps.length > 0 || flags.some((f) => f.note);
 
   return (
-    <li className={`job-card${tab === "excluded" || tab === "closed" ? " dim" : ""}${open ? " open" : ""}`}>
+    <li className={`job-card${tab === "excluded" || tab === "closed" ? " dim" : ""}${row ? " tracked" : ""}${open ? " open" : ""}`}>
       <ScoreBadge score={job.rank_score} unscored={tab === "unranked" ? "평가 전" : (STATUS_LABEL[status] ?? "제외")} />
       <div className="job-main">
         <div className="job-head">
@@ -141,8 +177,17 @@ function JobCard({ job }: { job: Job }) {
         )}
       </div>
       <div className="job-actions">
-        {url && tab !== "closed" && (
-          <CommandButton prompt={`/apply ${url}`} label="지원서 만들기" task={`지원서 만들기 · ${str(job.company)} / ${str(job.title)}`} />
+        {row && <TrackedBadge row={row} />}
+        {run && run.state !== "cancelled" && !(row && run.state === "succeeded") && <RunBadge run={run} />}
+        {url && tab !== "closed" && (!row || rowClosed) && (!run || run.state === "cancelled" || run.state === "failed" || (rowClosed && run.state === "succeeded")) && (
+          <ApplyButton
+            posting={url}
+            url={url}
+            jobKey={job.key}
+            label={rowClosed ? "다시 지원서 만들기" : "지원서 만들기"}
+            title={`지원서 만들기 · ${str(job.company)} / ${str(job.title)}`}
+            onStarted={onStarted}
+          />
         )}
         {url && (
           <a className="btn ghost small-btn" href={url} target="_blank" rel="noopener noreferrer">
@@ -156,25 +201,42 @@ function JobCard({ job }: { job: Job }) {
 
 export function Jobs() {
   const { data, error, reload } = useFetch<{ exists: boolean; jobs: Job[]; error?: string }>("/api/jobs", { live: true });
+  const runs = useRuns();
+  const runFor = useMemo(() => {
+    const byKey = new Map<string, Run>();
+    // Runs are newest first, so the first one seen for a job is its latest.
+    for (const r of (runs.data ?? []).filter((x) => x.kind === "apply")) {
+      for (const k of [r.subject.jobKey, r.subject.url]) if (k && !byKey.has(k)) byKey.set(k, r);
+    }
+    return (j: Job) => byKey.get(j.key) ?? (typeof j.url === "string" ? byKey.get(j.url) : undefined);
+  }, [runs.data]);
+  const tracker = useFetch<{ rows: Row[] }>("/api/tracker", { live: true });
+  const rowFor = useMemo(() => {
+    const rows = tracker.data?.rows ?? [];
+    const found = new Map((data?.jobs ?? []).map((j) => [j.key, trackedRow(j, rows)]));
+    return (j: Job) => found.get(j.key);
+  }, [data, tracker.data]);
+  // A posting with an application leaves the recommendations, like on the home page.
+  const tabOf = (j: Job): Tab => (rowFor(j) ? "tracked" : jobTab(j));
   const [q, setQ] = useState("");
   const [picked, setPicked] = useState<Tab | null>(null);
 
   const all = data?.jobs;
   const counts = useMemo(() => {
-    const c: Record<Tab, number> = { recommended: 0, unranked: 0, excluded: 0, closed: 0, all: all?.length ?? 0 };
-    for (const j of all ?? []) c[jobTab(j)]++;
+    const c: Record<Tab, number> = { recommended: 0, tracked: 0, unranked: 0, excluded: 0, closed: 0, all: all?.length ?? 0 };
+    for (const j of all ?? []) c[tabOf(j)]++;
     return c;
-  }, [all]);
+  }, [all, rowFor]);
   const tab: Tab = picked ?? (counts.recommended > 0 ? "recommended" : "all");
 
   const needle = q.trim().toLowerCase();
   const jobs = useMemo(
     () =>
       (all ?? [])
-        .filter((j) => tab === "all" || jobTab(j) === tab)
+        .filter((j) => tab === "all" || tabOf(j) === tab)
         .filter((j) => !needle || `${str(j.title)} ${str(j.company)} ${str(j.location)} ${portalName(str(j.portal))}`.toLowerCase().includes(needle))
         .sort((a, b) => (Number(b.rank_score ?? -1) - Number(a.rank_score ?? -1)) || str(b.first_seen ?? b.posted_date).localeCompare(str(a.first_seen ?? a.posted_date))),
-    [all, tab, needle],
+    [all, tab, needle, rowFor],
   );
 
   const rankButton = (kind: "primary" | "secondary") => (
@@ -208,6 +270,12 @@ export function Jobs() {
           새 공고를 모으면 AI가 평가해서 잘 맞는 순서로 보여 드려요.
         </EmptyState>
       );
+  } else if (tab === "tracked") {
+    empty = (
+      <EmptyState icon="clipboard" title="아직 지원서를 만든 공고가 없어요">
+        추천 공고에서 [지원서 만들기]를 누르면 여기로 옮겨 와요.
+      </EmptyState>
+    );
   } else {
     empty = <EmptyState icon="briefcase" title="이 목록은 비어 있어요" />;
   }
@@ -249,7 +317,7 @@ export function Jobs() {
               <input placeholder="회사·직무·지역으로 찾기" value={q} onChange={(e) => setQ(e.target.value)} aria-label="공고 검색" />
             </label>
           </div>
-          {data && (jobs.length === 0 ? empty : <ul className="job-list">{jobs.map((j) => <JobCard key={j.key} job={j} />)}</ul>)}
+          {data && (jobs.length === 0 ? empty : <ul className="job-list">{jobs.map((j) => <JobCard key={j.key} job={j} run={runFor(j)} row={rowFor(j)} onStarted={() => { runs.reload(); tracker.reload(); }} />)}</ul>)}
         </>
       )}
     </div>

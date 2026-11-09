@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ChatEvent, LiveEvent, RetryInfo, SessionState } from "../server/agent.ts";
 import type { WebMode } from "../server/modes.ts";
+import type { AppIdentity, ApplyRun as ApplyRunRecord, RunRecord, SelfIntroRun as SelfIntroRunRecord } from "../server/runs.ts";
+import type { SelfIntroQuestion } from "../server/selfIntro.ts";
+import type { ApplyParams, ResumeDecision } from "../server/results.ts";
 import { commandLabel } from "./labels.ts";
 import { panel } from "./panel.ts";
 
-export type { ChatEvent, LiveEvent, RetryInfo, SessionState, WebMode };
+export type { ApplyParams, ChatEvent, LiveEvent, ResumeDecision, RetryInfo, SessionState, WebMode };
+export type Run = RunRecord & { awaiting: boolean };
+export type ApplyRun = ApplyRunRecord & { awaiting: boolean };
+export type SelfIntroRun = SelfIntroRunRecord & { awaiting: boolean };
+export type { AppIdentity, SelfIntroQuestion };
 
 export const WEB_MODES: WebMode[] = ["default", "acceptEdits", "auto", "bypassPermissions"];
 
@@ -55,7 +62,9 @@ function debounce(fn: () => void, ms: number) {
 // `live` refetches when a task settles (goes idle or closes), so a page shows
 // what it wrote (tracker rows, ranked jobs, PDFs) without a manual reload.
 // Bursts are coalesced, and only the newest request may commit its response.
-export function useFetch<T>(url: string, opts: { live?: boolean } = {}) {
+// live: "any" also refetches on events that write nothing (a permission ask,
+// an answer), for data that tracks task state rather than files.
+export function useFetch<T>(url: string, opts: { live?: boolean | "any" } = {}) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const seq = useRef(0);
@@ -73,7 +82,7 @@ export function useFetch<T>(url: string, opts: { live?: boolean } = {}) {
   useEffect(() => {
     if (!opts.live) return;
     const soon = debounce(reload, LIVE_DEBOUNCE_MS);
-    const off = live.listen((m) => m.t === "sessions" && m.settled && soon());
+    const off = live.listen((m) => m.t === "sessions" && (m.settled || opts.live === "any") && soon());
     return () => {
       off();
       soon.cancel();
@@ -158,6 +167,36 @@ export function safeHttpUrl(url: unknown): string | null {
 }
 
 export type TaskMeta = { title?: string; kind?: string };
+
+export type ApplyOptions = Omit<ApplyParams, "posting" | "acceptFlaggedPosting">;
+
+export async function startSelfIntro(application: AppIdentity, body: { questions: SelfIntroQuestion[] } | { revise: { index: number; feedback: string } }) {
+  const run = await sendJSON<Run>("/api/runs", "POST", { kind: "self-intro", application, ...body });
+  if (run.sessionId) panel.show(run.sessionId);
+  return run;
+}
+
+export async function startApply(posting: string, options: ApplyOptions, meta: { title: string; jobKey?: string; url?: string }, attachments: string[] = []) {
+  const run = await sendJSON<Run>("/api/runs", "POST", {
+    kind: "apply",
+    params: { posting, ...options },
+    subject: { jobKey: meta.jobKey, url: meta.url },
+    title: meta.title,
+    ...(attachments.length ? { attachments } : {}),
+  });
+  if (run.sessionId) panel.show(run.sessionId);
+  return run;
+}
+
+export async function resumeRun(id: string, decision: ResumeDecision) {
+  const run = await sendJSON<Run>(`/api/runs/${encodeURIComponent(id)}/resume`, "POST", { decision });
+  if (run.sessionId) panel.show(run.sessionId);
+  return run;
+}
+
+export const dismissRun = (id: string) => sendJSON<Run>(`/api/runs/${encodeURIComponent(id)}/dismiss`, "POST");
+
+export const useRuns = () => useFetch<Run[]>("/api/runs", { live: "any" });
 
 export async function runCommand(prompt: string, meta: TaskMeta = {}, attachments: string[] = []) {
   const title = meta.title ?? commandLabel(prompt) ?? undefined;

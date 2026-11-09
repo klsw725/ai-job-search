@@ -166,6 +166,104 @@ describe("ChatSession", () => {
     expect(fakes.at(-1)!.options.disallowedTools).toEqual(["Read(.env)"]);
     s.close();
   });
+
+  test("a run session has no question tool, extra instructions and a result schema; a chat has none of them", async () => {
+    const schema = { type: "object" };
+    const s = new ChatSession(() => {}, () => {}, { rules: { allow: [], deny: ["Read(.env)"] }, run: { systemAppend: "NON-INTERACTIVE RUN", outputSchema: schema } });
+    const opts = fakes.at(-1)!.options;
+    expect(opts.disallowedTools).toEqual(["Read(.env)", "AskUserQuestion"]);
+    expect(opts.outputFormat).toEqual({ type: "json_schema", schema });
+    expect(opts.systemPrompt.append).toEndWith("\n\nNON-INTERACTIVE RUN");
+    s.close();
+    const chat = new ChatSession(() => {}, () => {});
+    expect(fakes.at(-1)!.options.outputFormat).toBeUndefined();
+    expect(fakes.at(-1)!.options.disallowedTools).toBeUndefined();
+    expect(fakes.at(-1)!.options.systemPrompt.append).not.toContain("NON-INTERACTIVE");
+    chat.close();
+  });
+
+  test("resuming a run reuses only a session already under the same run options", async () => {
+    const run = { systemAppend: "NON-INTERACTIVE RUN continue_below_threshold: false", outputSchema: { type: "object" } };
+    const m = new SessionManager(() => {}, async () => null);
+    const chat = await m.create({});
+    fakes.at(-1)!.emit({ type: "system", subtype: "init", session_id: "sdk-run", permissionMode: "default" });
+    await tick();
+
+    const fromChat = await m.resumeRun("sdk-run", { kind: "apply", run });
+    expect(fromChat).not.toBe(chat);
+    expect(chat.state).toBe("closed");
+    expect(fakes.at(-1)!.options.outputFormat).toEqual({ type: "json_schema", schema: run.outputSchema });
+    expect(fakes.at(-1)!.options.disallowedTools).toContain("AskUserQuestion");
+    expect(fakes.at(-1)!.options.resume).toBe("sdk-run");
+    fakes.at(-1)!.emit({ type: "system", subtype: "init", session_id: "sdk-run", permissionMode: "default" });
+    await tick();
+
+    expect(await m.resumeRun("sdk-run", { kind: "apply", run })).toBe(fromChat);
+
+    const approved = { ...run, systemAppend: "NON-INTERACTIVE RUN continue_below_threshold: true" };
+    const fresh = await m.resumeRun("sdk-run", { kind: "apply", run: approved });
+    expect(fresh).not.toBe(fromChat);
+    expect(fromChat.state).toBe("closed");
+    expect(fakes.at(-1)!.options.systemPrompt.append).toContain("continue_below_threshold: true");
+    fresh.close();
+  });
+
+  test("two resumes of one transcript at once start one session, and the second is refused", async () => {
+    const m = new SessionManager(() => {}, async () => null);
+    const before = fakes.length;
+    const run = { systemAppend: "NON-INTERACTIVE RUN", outputSchema: { type: "object" } };
+    const outcomes = await Promise.allSettled([m.resumeRun("sdk-cold", { run }), m.resumeRun("sdk-cold", { run })]);
+    expect(outcomes.map((o) => o.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(fakes.length - before).toBe(1);
+    for (const o of outcomes) if (o.status === "fulfilled") o.value.close();
+  });
+
+  test("a chat resume and a run resume of one transcript never make two sessions", async () => {
+    const m = new SessionManager(() => {}, async () => null);
+    const run = { systemAppend: "NON-INTERACTIVE RUN", outputSchema: { type: "object" } };
+    const before = fakes.length;
+    const [chat, other] = await Promise.allSettled([m.resume("sdk-mixed"), m.resumeRun("sdk-mixed", { run })]);
+    expect(fakes.length - before).toBe(1);
+    expect(other.status).toBe("rejected");
+    if (chat.status === "fulfilled") chat.value.close();
+
+    const before2 = fakes.length;
+    const runFirst = m.resumeRun("sdk-mixed-2", { run });
+    const chatJoins = m.resume("sdk-mixed-2");
+    const [a, b] = await Promise.all([runFirst, chatJoins]);
+    expect(a).toBe(b);
+    expect(fakes.length - before2).toBe(1);
+    a.close();
+  });
+
+  test("a resume is refused while the run's session is still working", async () => {
+    const m = new SessionManager(() => {}, async () => null);
+    const run = { systemAppend: "NON-INTERACTIVE RUN", outputSchema: { type: "object" } };
+    const s = await m.create({ run });
+    fakes.at(-1)!.emit({ type: "system", subtype: "init", session_id: "sdk-busy", permissionMode: "default" });
+    s.send("go");
+    await tick();
+    await expect(m.resumeRun("sdk-busy", { run })).rejects.toThrow();
+    expect(s.state).toBe("running");
+    s.close();
+  });
+
+  test("a successful result carries the structured output; a failed one does not", async () => {
+    const events: any[] = [];
+    const s = new ChatSession((_, ev) => events.push(ev), () => {});
+    const fake = fakes.at(-1)!;
+    s.send("go");
+    await tick();
+    fake.emit({ ...result(0, [(fake.inputs[0] as any).uuid]), structured_output: { status: "done" } });
+    await tick();
+    expect(events.find((e) => e.kind === "result").structured).toEqual({ status: "done" });
+    s.send("again");
+    await tick();
+    fake.emit({ type: "result", subtype: "error_max_turns", is_error: true, total_cost_usd: 0, duration_ms: 1, structured_output: { status: "done" }, user_message_uuids: [(fake.inputs[1] as any).uuid] });
+    await tick();
+    expect(events.filter((e) => e.kind === "result").at(-1).structured).toBeUndefined();
+    s.close();
+  });
 });
 
 describe("permission modes", () => {

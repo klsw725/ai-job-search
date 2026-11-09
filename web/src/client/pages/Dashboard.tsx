@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { runCommand, safeHttpUrl, useActiveSessions, useFetch, type SessionSummary } from "../api.ts";
+import { safeHttpUrl, useActiveSessions, useFetch, type SessionSummary } from "../api.ts";
+import { ApplyButton, ApplyDialog } from "../apply.tsx";
 import { AttachButton, AttachmentTray, DropZone, useAttachments } from "../attach.tsx";
 import { fitBand, recommended } from "../jobs.ts";
 import { COMMAND_LABEL } from "../labels.ts";
@@ -24,6 +25,8 @@ const STAGE_PAGE: Record<StageId, string> = {
 
 function ActionButton({ action, primary }: { action: NextAction["cta"]; primary?: boolean }) {
   const kind = primary ? "primary" : "secondary";
+  const apply = action.prompt && /^\/apply\s+(https?:\/\/\S+)\s*$/.exec(action.prompt);
+  if (apply) return <ApplyButton posting={apply[1]!} url={apply[1]!} title={action.task ?? "지원서 만들기"} label={action.label} kind={kind} />;
   if (action.prompt) return <CommandButton prompt={action.prompt} label={action.label} task={action.task} kind={kind} />;
   return (
     <a className={`btn ${kind}`} href={action.href}>
@@ -103,10 +106,11 @@ function applyTitle(input: string): string {
 
 function NewApplication() {
   const [text, setText] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [asking, setAsking] = useState(false);
   const files = useAttachments();
-  const ready = (text.trim() !== "" || files.paths.length > 0) && !files.uploading && !busy;
+  const ready = (text.trim() !== "" || files.paths.length > 0) && !files.uploading;
+  const t = text.trim();
+  const url = safeHttpUrl(t);
   return (
     <Card title="지원할 공고가 있나요?">
       <p className="muted">
@@ -120,27 +124,23 @@ function NewApplication() {
       <div className="row wrap">
         <AttachButton onFiles={files.add} label="공고 캡처·PDF 첨부" />
         <span className="grow" />
-        <ErrorBox error={err} />
-        <button
-          className="btn primary"
-          disabled={!ready}
-          onClick={() => {
-            const t = text.trim();
-            setBusy(true);
-            setErr(null);
-            const prompt = t ? `/apply ${t}` : "/apply 첨부한 공고 파일을 읽고 진행해 주세요";
-            runCommand(prompt, { title: applyTitle(t) }, files.paths)
-              .then(() => {
-                setText("");
-                files.clear();
-              })
-              .catch((e: Error) => setErr(e.message))
-              .finally(() => setBusy(false));
-          }}
-        >
+        <button className="btn primary" disabled={!ready} onClick={() => setAsking(true)}>
           지원서 만들기 <Icon name="arrow" size={14} />
         </button>
       </div>
+      {asking && (
+        <ApplyDialog
+          posting={t}
+          url={url ?? undefined}
+          title={applyTitle(t)}
+          attachments={files.paths}
+          onClose={() => setAsking(false)}
+          onStarted={() => {
+            setText("");
+            files.clear();
+          }}
+        />
+      )}
     </Card>
   );
 }
@@ -272,7 +272,7 @@ export function Dashboard() {
                     <span className="ellipsis">{String(j.title ?? "")}</span>
                   </span>
                   {typeof j.url === "string" && (
-                    <CommandButton prompt={`/apply ${j.url}`} label="지원서 만들기" task={`지원서 만들기 · ${String(j.company ?? "")} / ${String(j.title ?? "")}`} />
+                    <ApplyButton posting={j.url} url={j.url} jobKey={String(j.key)} title={`지원서 만들기 · ${String(j.company ?? "")} / ${String(j.title ?? "")}`} />
                   )}
                 </li>
               ))}

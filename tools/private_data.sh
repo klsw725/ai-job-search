@@ -15,7 +15,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PRIVATE_GIT="$ROOT/.private-data.git"
 
-PATHS="documents job_search_tracker.csv job_scraper cv cover_letters company_research reports upskill gmail_sync salary_data.json"
+PATHS="documents job_search_tracker.csv job_scraper cv cover_letters company_research reports upskill gmail_sync salary_data.json .ajs"
 # Tracked framework files inside those folders: the main repo already versions them.
 FRAMEWORK="cv/main_example.tex cover_letters/cover_example.tex cover_letters/cover.cls cover_letters/OpenFonts"
 # Never back up anything that looks like a credential, wherever it sits.

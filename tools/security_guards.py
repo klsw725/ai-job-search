@@ -195,6 +195,8 @@ REQUIRED_IGNORE_RULES = [
     # /interview's prep packs land under documents/applications/**, above.
     "documents/interview/**",
     "job_search_tracker.csv",
+    # The web UI's task records: run parameters and results name companies and roles.
+    ".ajs/",
     "gmail_sync/",
     "reports/",
     "upskill/*.md",

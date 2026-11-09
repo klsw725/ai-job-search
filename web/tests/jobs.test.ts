@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { fitBand, jobTab, recommended } from "../src/client/jobs.ts";
 import { portalName } from "../src/client/labels.ts";
+import { trackedRow, untracked } from "../src/client/workflow.ts";
 
 describe("jobs page", () => {
   test("jobs sort into tabs", () => {
@@ -35,6 +36,22 @@ describe("jobs page", () => {
     expect(fitBand(45).tone).toBe("moderate");
     expect(fitBand(30).tone).toBe("weak");
     expect(fitBand(0).tone).toBe("poor");
+  });
+
+  test("a posting finds its tracker row by link first, then by company and title", () => {
+    const rows = [
+      { date: "2026-11-01", company: "Acme", role: "Engineer", status: "rejected", source: "https://x.io/1/" },
+      { date: "2026-11-09", company: "Acme", role: "Engineer", status: "drafted", source: "https://x.io/1" },
+      { date: "2026-11-05", company: "Beta", role: "ML", status: "applied", source: "" },
+      { date: "2026-11-06", company: "Gamma", role: "Other role", status: "applied", source: "https://x.io/3" },
+    ];
+    expect(trackedRow({ url: "https://x.io/1", company: "Acme", title: "Engineer" }, rows)?.status).toBe("drafted");
+    expect(trackedRow({ url: "https://y.io/2", company: " beta ", title: "ml" }, rows)?.status).toBe("applied");
+    expect(trackedRow({ url: "https://x.io/3", company: "Gamma", title: "Different title" }, rows)?.status).toBe("applied");
+    expect(trackedRow({ url: "https://z.io/9", company: "Delta", title: "ML" }, rows)).toBeUndefined();
+    expect(trackedRow({ url: "HTTPS://X.IO/1", company: "Other", title: "Other" }, rows)?.status).toBe("drafted");
+    expect(trackedRow({ url: "https://x.io/Case", company: "Other", title: "Other" }, [{ date: "2026-11-01", company: "C", role: "R", status: "applied", source: "https://x.io/case" }])).toBeUndefined();
+    expect(untracked([{ url: "https://x.io/1" }, { url: "https://z.io/9", company: "Delta", title: "ML" }], rows)).toHaveLength(1);
   });
 
   test("portal ids read as site names", () => {

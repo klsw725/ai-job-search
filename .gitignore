@@ -100,6 +100,11 @@ documents/interview/**
 
 # Personal job search tracking
 job_search_tracker.csv
+# tools/tracker_state.py's writer lock and in-flight temp files
+.job_search_tracker.csv.*
+
+# Web UI task records (run state, results)
+.ajs/
 
 # Gmail sync state (message IDs, subjects - personal data)
 gmail_sync/

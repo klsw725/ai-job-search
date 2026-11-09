@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { runCommand } from "./api.ts";
 import { STATUS_LABEL, commandLabel } from "./labels.ts";
 import { renderMarkdown } from "./markdown.ts";
@@ -70,6 +70,47 @@ export function PageHeader({ title, description, actions }: { title: string; des
       </div>
       {actions && <div className="page-actions">{actions}</div>}
     </header>
+  );
+}
+
+// A native modal dialog: the browser keeps focus inside, makes the page behind
+// inert and returns focus on close. Escape and a backdrop click both close it.
+export function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+  const box = useRef<HTMLDialogElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const dialog = box.current;
+    if (!dialog) return;
+    const before = document.activeElement as HTMLElement | null;
+    dialog.showModal();
+    dialog.querySelector<HTMLElement>(".modal-body :is(input, select, textarea, button)")?.focus();
+    return () => {
+      if (dialog.open) dialog.close();
+      before?.focus();
+    };
+  }, []);
+  return (
+    <dialog
+      ref={box}
+      className="modal"
+      aria-label={title}
+      onCancel={(e) => {
+        e.preventDefault();
+        close.current();
+      }}
+      onClick={(e) => e.target === e.currentTarget && close.current()}
+    >
+      <div className="modal-inner">
+        <header className="card-head">
+          <h2>{title}</h2>
+          <button className="btn ghost small-btn" onClick={() => close.current()} aria-label="닫기">
+            <Icon name="x" size={14} />
+          </button>
+        </header>
+        <div className="modal-body">{children}</div>
+      </div>
+    </dialog>
   );
 }
 

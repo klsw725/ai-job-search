@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Application, RunPage } from "./pages/Application.tsx";
 import { Chat } from "./pages/Chat.tsx";
 import { Dashboard } from "./pages/Dashboard.tsx";
 import { Documents } from "./pages/Documents.tsx";
@@ -50,6 +51,8 @@ function App() {
   const body =
     page === "jobs" ? <Jobs /> :
     page === "tracker" ? <Tracker /> :
+    page === "applications" && arg ? <Application key={arg} id={arg} /> :
+    page === "runs" && arg ? <RunPage key={arg} id={arg} /> :
     page === "documents" ? <Documents /> :
     page === "profile" ? <Profile /> :
     page === "settings" ? <Settings /> :
@@ -63,7 +66,7 @@ function App() {
           AI Job Search
         </div>
         {NAV.map((n) => (
-          <a key={n.path} href={`#/${n.path}`} className={page === n.path ? "nav-link active" : "nav-link"}>
+          <a key={n.path} href={`#/${n.path}`} className={page === n.path || (n.path === "tracker" && page === "applications") || (n.path === "jobs" && page === "runs") ? "nav-link active" : "nav-link"}>
             <Icon name={n.icon} size={17} />
             {n.label}
           </a>

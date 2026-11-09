@@ -150,6 +150,7 @@ const PORTAL_NAME: Record<string, string> = {
   jumpit: "점핏",
   rocketpunch: "로켓펀치",
   programmers: "프로그래머스",
+  "user-supplied": "직접 넣은 공고",
 };
 
 // Job rows carry the portal id ("linkedin-search", "wanted"), not its name.

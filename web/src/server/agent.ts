@@ -29,7 +29,7 @@ export type ChatEvent =
   | { kind: "permission"; requestId: string; toolName: string; input: string; reason?: string; canAlways: boolean }
   | { kind: "question"; requestId: string; questions: Question[] }
   | { kind: "resolved"; requestId: string; outcome: string }
-  | { kind: "result"; ok: boolean; text: string; costUsd?: number; durationMs?: number }
+  | { kind: "result"; ok: boolean; text: string; costUsd?: number; durationMs?: number; structured?: unknown }
   | { kind: "error"; text: string };
 
 export type Question = {
@@ -58,7 +58,7 @@ const MAX_EVENTS = 2000;
 
 const WEB_APPEND = [
   "You are running behind a local web UI for this job-search repo.",
-  "The user reads your replies as rendered Markdown and answers AskUserQuestion through a form, so prefer AskUserQuestion for choices.",
+  "The user reads your replies as rendered Markdown. Ask only when the task cannot go on without the user's decision; then use AskUserQuestion, which the UI shows as a form.",
   "Write to the user in the language they use (usually Korean).",
   "The UI shows your todo list as the progress checklist of the task: for any multi-step request, especially slash commands such as /apply, /setup, /rank, /outcome or /interview,",
   "create the todo list (TodoWrite, or TaskCreate/TaskUpdate if that is what you have) before the first step and keep it current as steps start and finish.",
@@ -191,8 +191,15 @@ type Pending = {
   resolve: (r: PermissionResult) => void;
 };
 
+// A run started from a button rather than a chat: no questions, extra
+// instructions answering the command's questions, and a schema-checked result.
+export type RunOptions = { systemAppend: string; outputSchema: Record<string, unknown>; disallow?: string[] };
+
+export const runKey = (run: RunOptions | undefined) => (run ? JSON.stringify([run.systemAppend, run.outputSchema, run.disallow ?? []]) : null);
+
 export type SessionOptions = {
   resume?: string;
+  run?: RunOptions;
   title?: string;
   kind?: string;
   history?: ChatEvent[];
@@ -205,6 +212,8 @@ export type SessionOptions = {
   onProcessChange?: (session: ChatSession, exited: boolean) => void;
 };
 
+export const RESUME_BUSY = "이 작업은 이미 이어서 하는 중이에요.";
+
 export const FROZEN_MESSAGE = "데이터를 초기화하는 중이에요. 끝난 뒤 다시 시도하세요.";
 
 export class ChatSession {
@@ -214,6 +223,8 @@ export class ChatSession {
   sdkSessionId: string | null;
   title: string;
   readonly kind: string;
+  // The run contract this session was started with; null for a chat.
+  readonly runKey: string | null;
   mode: WebMode;
   state: SessionState = "idle";
   events: ChatEvent[] = [];
@@ -241,6 +252,7 @@ export class ChatSession {
     this.sdkSessionId = opts.resume ?? null;
     this.title = opts.title ?? "새 대화";
     this.kind = opts.kind ?? "chat";
+    this.runKey = runKey(opts.run);
     this.mode = opts.mode === "bypassPermissions" && !bypassAllowed() ? "default" : (opts.mode ?? "default");
     if (opts.history) this.events = opts.history.slice(-MAX_EVENTS);
     this.q = query({
@@ -248,7 +260,8 @@ export class ChatSession {
       options: {
         cwd: REPO_DIR,
         settingSources: ["user", "project", "local"],
-        systemPrompt: { type: "preset", preset: "claude_code", append: WEB_APPEND },
+        systemPrompt: { type: "preset", preset: "claude_code", append: opts.run ? `${WEB_APPEND}\n\n${opts.run.systemAppend}` : WEB_APPEND },
+        ...(opts.run ? { outputFormat: { type: "json_schema" as const, schema: opts.run.outputSchema } } : {}),
         ...(opts.env ? { env: opts.env } : {}),
         permissionMode: this.mode,
         // Only makes switching to bypass possible later; it enables nothing by itself.
@@ -257,7 +270,7 @@ export class ChatSession {
         includePartialMessages: true,
         resume: opts.resume,
         allowedTools: opts.rules?.allow,
-        disallowedTools: opts.rules?.deny,
+        disallowedTools: opts.run ? [...(opts.rules?.deny ?? []), "AskUserQuestion", ...(opts.run.disallow ?? [])] : opts.rules?.deny,
         spawnClaudeCodeProcess: this.spawnProcess,
       },
     });
@@ -379,7 +392,8 @@ export class ChatSession {
       case "result": {
         const ok = m.subtype === "success" && !m.is_error;
         const text = m.subtype === "success" ? "" : m.subtype;
-        this.record({ kind: "result", ok, text, costUsd: m.total_cost_usd, durationMs: m.duration_ms });
+        const structured = m.subtype === "success" ? m.structured_output : undefined;
+        this.record({ kind: "result", ok, text, costUsd: m.total_cost_usd, durationMs: m.duration_ms, ...(structured === undefined ? {} : { structured }) });
         // Sends are consumed in order, so everything up to the newest send this
         // result names is answered (the SDK caps its list at 64 but always
         // includes the newest). A result naming no send (a synthetic turn or a
@@ -577,15 +591,40 @@ export class SessionManager {
     return this.sessions.get(id);
   }
 
+  // One resume per transcript at a time, chat or run: a chat opened while a
+  // run is being resumed joins that resume instead of starting a second session.
   resume(sdkId: string): Promise<ChatSession> {
     if (this.frozen) return Promise.reject(new Error(FROZEN_MESSAGE));
-    const live = [...this.sessions.values()].find((s) => s.sdkSessionId === sdkId);
-    if (live) return Promise.resolve(live);
     const inFlight = this.resuming.get(sdkId);
     if (inFlight) return inFlight;
+    const live = [...this.sessions.values()].find((s) => s.sdkSessionId === sdkId);
+    if (live) return Promise.resolve(live);
     const started = (async () => {
       const info = (await listSessions({ dir: REPO_DIR, limit: 200, includeWorktrees: false })).find((s) => s.sessionId === sdkId);
       return this.create({ resume: sdkId, title: info?.customTitle ?? info?.summary, history: await loadHistory(sdkId) });
+    })().finally(() => this.resuming.delete(sdkId));
+    this.resuming.set(sdkId, started);
+    return started;
+  }
+
+  // A run continues in its own transcript under the run options it is given.
+  // An open session is reused only when it already runs under exactly those
+  // options; any other (a chat reopened on the transcript, or the run's own
+  // session under its old parameters) is closed and, once its process has
+  // exited, the transcript is resumed fresh. Shares resume()'s one-at-a-time map.
+  resumeRun(sdkId: string, opts: SessionOptions): Promise<ChatSession> {
+    if (this.frozen) return Promise.reject(new Error(FROZEN_MESSAGE));
+    if (this.resuming.has(sdkId)) return Promise.reject(new Error(RESUME_BUSY));
+    const started = (async () => {
+      const key = runKey(opts.run);
+      const live = [...this.sessions.values()].find((s) => s.sdkSessionId === sdkId && s.state !== "closed");
+      if (live?.state === "running") throw new Error(RESUME_BUSY);
+      if (live && live.runKey === key && live.summary().pending === 0) return live;
+      live?.close();
+      const deadline = Date.now() + STOP_TIMEOUT_MS;
+      while ((this.hasLiveProcess(sdkId) || (live && this.sessions.get(live.id) === live)) && Date.now() < deadline) await sleep(50);
+      if (this.hasLiveProcess(sdkId)) throw new Error("이전 AI 작업이 아직 끝나지 않았어요. 잠시 후 다시 시도하세요.");
+      return this.create({ ...opts, resume: sdkId, history: await loadHistory(sdkId) });
     })().finally(() => this.resuming.delete(sdkId));
     this.resuming.set(sdkId, started);
     return started;

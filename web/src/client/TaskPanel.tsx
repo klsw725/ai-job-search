@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
-import { live, type SessionSummary } from "./api.ts";
+import { live, useRuns, type SessionSummary } from "./api.ts";
+import { applicationId } from "./pipeline.ts";
 import { AttachButton, AttachmentTray, DropZone, useAttachments } from "./attach.tsx";
 import { resultErrorText } from "./labels.ts";
 import { panel, usePanel } from "./panel.ts";
@@ -109,6 +110,9 @@ function TaskView({ id, since, title }: { id: string; since: number | null; titl
 
 export function TaskPanel({ sessions, shownElsewhere }: { sessions: SessionSummary[]; shownElsewhere: string | null }) {
   const { open, sessionId } = usePanel();
+  const runs = useRuns();
+  const run = sessionId ? runs.data?.find((r) => r.sessionId === sessionId) : undefined;
+  const resultHref = run && run.state !== "running" ? (run.state === "succeeded" && run.checks?.row ? `#/applications/${applicationId(run.checks.row)}` : `#/runs/${run.id}`) : null;
   const started = useRef(new Map<string, number>());
   for (const s of sessions) started.current.set(s.id, s.createdAt);
   if (!open) return null;
@@ -142,6 +146,11 @@ export function TaskPanel({ sessions, shownElsewhere }: { sessions: SessionSumma
               <h2 className="task-title">{current.title}</h2>
               {current.state !== "closed" && <ModeSelect sessionId={current.id} mode={current.mode} />}
             </div>
+          )}
+          {resultHref && (
+            <a className="btn primary block" href={resultHref} onClick={() => panel.hide()}>
+              {run?.state === "succeeded" ? "완성된 지원서 보기" : "결과 확인하기"}
+            </a>
           )}
           <TaskView key={sessionId} id={sessionId} since={started.current.get(sessionId) ?? null} title={current?.title ?? "AI 작업"} />
         </>

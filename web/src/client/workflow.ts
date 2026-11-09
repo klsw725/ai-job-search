@@ -41,14 +41,27 @@ const STAGES: { id: StageId; title: string; summary: string }[] = [
 
 const status = (r: Record<string, string>) => (r.status ?? "").trim().toLowerCase().replaceAll(" ", "_");
 const norm = (v: unknown) => (typeof v === "string" ? v.trim().toLowerCase() : "");
-const urlKey = (v: unknown) => norm(v).replace(/#.*$/, "").replace(/\/+$/, "");
+// Scheme and host are case-insensitive; a path or query may not be.
+const urlKey = (v: unknown) => {
+  const raw = typeof v === "string" ? v.trim().replace(/#.*$/, "").replace(/\/+$/, "") : "";
+  const m = /^([a-z][a-z0-9+.-]*:\/\/[^/?]*)(.*)$/i.exec(raw);
+  return m ? m[1]!.toLowerCase() + m[2]! : raw;
+};
+
+// The tracker row for a posting: same link first, else same company and
+// title. With several (a re-application), the newest row is the one shown.
+export function trackedRow<R extends Record<string, string>>(job: Record<string, unknown>, rows: R[]): R | undefined {
+  const url = urlKey(job.url);
+  const byUrl = url ? rows.filter((r) => urlKey(r.source) === url) : [];
+  const byName = norm(job.company) ? rows.filter((r) => norm(r.company) === norm(job.company) && norm(r.role) === norm(job.title)) : [];
+  const found = byUrl.length ? byUrl : byName;
+  return found.reduce<R | undefined>((best, r) => (!best || (r.date ?? "") >= (best.date ?? "") ? r : best), undefined);
+}
 
 // A ranked posting the tracker already has a row for (same link, or same
 // company and title) is no longer something to apply to.
 export function untracked(jobs: Record<string, unknown>[], rows: Record<string, string>[]) {
-  const urls = new Set(rows.map((r) => urlKey(r.source)).filter(Boolean));
-  const names = new Set(rows.map((r) => `${norm(r.company)}\n${norm(r.role)}`));
-  return jobs.filter((j) => !urls.has(urlKey(j.url)) && !(norm(j.company) && names.has(`${norm(j.company)}\n${norm(j.title)}`)));
+  return jobs.filter((j) => !trackedRow(j, rows));
 }
 const REACHED_INTERVIEW = new Set(["interview", "offer", "hired", "offer_declined"]);
 const FINAL = new Set(["hired", "rejected", "no_response", "offer_declined", "withdrawn"]);
