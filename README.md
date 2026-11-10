@@ -23,6 +23,10 @@
 <p align="center">
   <a href="#quick-start"><b>Quick start</b></a>
   &nbsp;&nbsp;&nbsp;
+  <a href="#web-ui"><b>Web UI</b></a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="#korean-market"><b>Korean market</b></a>
+  &nbsp;&nbsp;&nbsp;
   <a href="#commands"><b>Commands</b></a>
   &nbsp;&nbsp;&nbsp;
   <a href="#how-apply-works"><b>How /apply works</b></a>
@@ -72,6 +76,15 @@ The core workflow (self-profiling, fit evaluation, and the drafter-reviewer appl
 
 The framework encodes career guidance best practices, including structured evaluation criteria, forward-looking cover letter framing, and optional salary benchmarking.
 
+### What's new in this fork
+
+| | |
+|---|---|
+| **[Web UI](#web-ui)** | A local browser app (Bun + Claude Agent SDK, Korean interface) on top of the same commands: a job-search home with the next step, job cards, a kanban application board, one-click 지원서 만들기 that runs `/apply` without a chat, 자기소개서 answers with exact character counts, and a task panel for every AI job. Runs in Docker or directly. |
+| **[Korean market](#korean-market)** | `10-korea-market.md` layers Korean conventions on the universal rules: 국문 이력서 and 경력기술서 format, 문항형 자기소개서, Korean boards and hiring process, and a Korea Gate in fit evaluation. Ships Typst templates `kr-resume` and `kr-letter`. |
+| **[Personal data out of git](#personal-data-stays-out-of-git)** | `/setup` writes your profile to git-ignored overlays in `documents/profile/`; tracked files keep their placeholders. `tools/private_data.sh` keeps a separate private history of everything personal. |
+| **Eligibility gate in `/rank`** | Besides the Language Gate, every ranked posting gets an `eligibility_gate` (experience requirement, deal-breakers, Korea Gate). `FAIL` vetoes the job; `FLAG` stays in the ranking with the reason shown. |
+
 ## Quick start
 
 > 🎥 **Prefer to see it in action first?** [The Next New Thing did a hands-on walkthrough](https://www.youtube.com/watch?v=HoVxjMNFYv4) of how the workflow is actually used, from setup to a finished application (recorded August 2026 - commands may have evolved since).
@@ -83,8 +96,9 @@ The framework encodes career guidance best practices, including structured evalu
 | **[Claude Code](https://claude.com/claude-code)** | The CLI. No free tier: a Claude Pro/Max/Team subscription or Anthropic API credits (pay-per-token, usually cheaper for occasional use). |
 | **Python 3.10+** | For the tools in `tools/`. |
 | **[Bun](https://bun.sh)** | Runs the job search CLI tools. |
-| **LaTeX** | A distribution with `lualatex` and `xelatex`: [TeX Live](https://tug.org/texlive/), [MacTeX](https://tug.org/mactex/), [TinyTeX](https://yihui.org/tinytex/), or [MiKTeX](https://miktex.org/). |
+| **LaTeX** or **[Typst](https://typst.app/)** | LaTeX (`lualatex` + `xelatex`: [TeX Live](https://tug.org/texlive/), [MacTeX](https://tug.org/mactex/), [TinyTeX](https://yihui.org/tinytex/), or [MiKTeX](https://miktex.org/)) for the stock moderncv templates, or Typst for the Korean `kr-resume` / `kr-letter` templates. |
 | **pypdf** *(optional)* | `pip install pypdf` for `/apply`'s ATS parseability check. |
+| **Docker** *(optional)* | Runs the [web UI](#web-ui) with Bun, Python, Typst, Noto CJK fonts and poppler preinstalled - nothing else to install on the host. |
 
 <details>
 <summary>Fine print: other agents, LaTeX engines, PDF text extraction</summary>
@@ -104,12 +118,21 @@ cd ai-job-search
 
 > [!IMPORTANT]
 > **A fork of this repo is always public** — GitHub does not allow private forks of
-> public repositories — and `/setup` (step 3 below) writes your personal data (name,
-> contact details, employment history, salary expectations) into **tracked** files.
-> If this copy is for your own job search rather than for contributing changes back,
-> use a **private repository** with this repo as `upstream` instead — the two-minute
-> recipe is in [SETUP.md section 8](SETUP.md#8-pulling-upstream-updates-into-your-fork),
-> and every update workflow works identically. Fork only to contribute.
+> public repositories. `/setup` (step 3 below) writes your personal data (name,
+> contact details, employment history, salary expectations) only to the git-ignored
+> `documents/profile/` folder, and the tracker, generated CVs and application archive
+> are git-ignored too (see [Personal data stays out of git](#personal-data-stays-out-of-git)).
+> Even so, one `git add -f` or a profile written by an older version of `/setup` is
+> enough to publish it. If this copy is for your own job search rather than for
+> contributing changes back, a **private repository** with this repo as `upstream` is
+> still the safer choice — the two-minute recipe is in
+> [SETUP.md section 8](SETUP.md#8-pulling-upstream-updates-into-your-fork).
+
+> [!TIP]
+> **Prefer a browser to a terminal?** After cloning, `cp env.example .env`, add your
+> Claude credential, and run `docker compose up -d --build`. Then open
+> http://localhost:3000 and do steps 3-5 from buttons instead of slash commands -
+> see [Web UI](#web-ui).
 
 ### 2. Install job search tools
 
@@ -136,6 +159,8 @@ claude
 
 `/setup` offers three paths: read your `documents/` folder if you have one populated (CV PDF, LinkedIn export, diplomas, reference letters, past applications), import a single CV pasted in chat, or walk through an interview. It auto-detects what you have and asks. Documents-folder mode is idempotent and safe to re-run as you add more material; see `documents/README.md` for the layout.
 
+Everything it learns goes to `documents/profile/` (git-ignored), starting from the placeholder skeletons in `templates/profile/`. Set `Market: South Korea` in the profile, or apply to a Korean posting, and the [Korean market](#korean-market) rules switch on.
+
 ### 4. Search for jobs
 
 ```bash
@@ -160,6 +185,67 @@ This runs the full workflow: evaluate fit, draft CV + cover letter, review with 
 
 > [!WARNING]
 > Postings are treated as untrusted input (the workflow follows no instructions embedded in them and fetches no links from their body), but agentic defenses are instruction-level, not a sandbox - on an unfamiliar job board, skim what was fetched and written before you hit send. Details in [SECURITY.md](SECURITY.md).
+
+## Web UI
+
+`web/` is a local browser app for the same workflow. It does not replace the commands: it runs them through the Claude Agent SDK and shows what they write (`documents/profile/`, `job_scraper/seen_jobs.json`, `job_search_tracker.csv`, the PDFs). The interface is in Korean; the full guide, also in Korean, is [`web/README.md`](web/README.md).
+
+<p align="center">
+  <img src="assets/readme/screenshots/home.webp" alt="Web UI home: a six-step job-search journey from building the profile to recording outcomes, a next-step card that suggests preparing for an upcoming interview, a box for pasting a posting link, and summaries of applications and recommended jobs." width="100%">
+</p>
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="assets/readme/screenshots/jobs.webp" alt="Job cards from /scrape and /rank with a fit score, fit band, site, location, deadline, strengths and gaps, and a language warning on one card." width="100%"><br>
+      <b>공고 찾기</b> - <code>/scrape</code> and <code>/rank</code> results as cards: fit score, strengths and gaps, gate warnings, deadlines. Tabs for recommended, already applied, not yet ranked, excluded and closed.
+    </td>
+    <td width="50%" valign="top">
+      <img src="assets/readme/screenshots/apply-dialog.webp" alt="The 지원서 만들기 dialog with a fit threshold, options to continue below it and draft form fields, and a 자기소개서 question with a 700-character limit." width="100%"><br>
+      <b>지원서 만들기</b> - runs <code>/apply</code> to the end without a chat. The answers to its questions are chosen up front; it stops only for a flagged posting, a fit below the threshold or an unreachable page.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="assets/readme/screenshots/tracker.webp" alt="Kanban board with drafted, applied, interview, offer and closed columns, each card showing fit, dates and links to the CV and cover letter." width="100%"><br>
+      <b>내 지원</b> - the tracker as a kanban board. Moving a card goes through <code>tools/tracker_state.py</code>, which applies <code>/outcome</code>'s rules under a file lock.
+    </td>
+    <td width="50%" valign="top">
+      <img src="assets/readme/screenshots/application.webp" alt="Application detail page with the run result, what was tailored, what the AI assumed, the generated files and a preview of the Korean CV PDF." width="100%"><br>
+      <b>지원 상세</b> - the run result, what was tailored and what the AI assumed, every generated file and a PDF preview, plus next steps (interview prep, follow-up, outcome).
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="assets/readme/screenshots/self-intro.webp" alt="Two 자기소개서 answers with their character counts against the limits, the experiences each answer draws on, and copy and rewrite buttons." width="100%"><br>
+      <b>자기소개서 문항</b> - paste the employer's questions; the server counts every answer with <code>tools/self_intro_count.py</code> (with/without spaces, EUC-KR bytes) and sends out-of-range answers back to the AI, at most twice.
+    </td>
+    <td width="50%" valign="top">
+      <img src="assets/readme/screenshots/profile.webp" alt="Profile page with key facts, one item still to confirm, and tabs for each profile file." width="100%"><br>
+      <b>내 프로필</b> - key facts, items <code>/setup</code> left unconfirmed, and one card per section with an inline edit request.
+    </td>
+  </tr>
+</table>
+
+<sub>Screenshots use invented demo data: the candidate, the companies and the postings are fictional.</sub>
+
+### Running it
+
+```bash
+cp env.example .env            # add ONE credential: CLAUDE_CODE_OAUTH_TOKEN (claude setup-token) or ANTHROPIC_API_KEY
+docker compose up -d --build   # Linux: APP_UID=$(id -u) APP_GID=$(id -g) docker compose up -d --build
+# then open http://localhost:3000 (WEB_PORT in .env changes the port)
+```
+
+Without Docker: `cd web && bun install && bun run start` (uses the host's Claude Code login).
+
+- **Task panel.** Buttons start the matching command in a side panel with the agent's todo list as progress, the current activity, permission and question cards, and the files it produced. A notification appears on any page when the AI is waiting for you.
+- **Chat.** The full Claude Code conversation history, with file and image attachments (drag and drop or paste), copy and download of replies, and per-folder ZIP downloads.
+- **Settings.** Claude connection (`.env`, or log Claude Code in with a Claude account; not on direct macOS runs, where Claude Code keeps its login in the Keychain), a custom Anthropic-compatible endpoint via `ANTHROPIC_BASE_URL`, the default permission mode, folder trust, and a data reset for the profile and chat history.
+- **Runs survive restarts.** 지원서 만들기 and 자기소개서 runs are recorded in `.ajs/runs/` (git-ignored) and can be resumed.
+
+> [!WARNING]
+> The web UI runs Claude Code with tool access to this repo. It listens on `127.0.0.1` only and rejects requests whose `Host` or `Origin` is not local. On macOS and other non-Linux hosts, file reading and upload are off by default when it runs outside Docker, because the race-free path check needs Linux; [`web/README.md`](web/README.md) explains the opt-in and its trade-off.
 
 ## Commands
 
@@ -228,21 +314,49 @@ All claims in the CV and cover letter are verified against your actual profile. 
 
 </details>
 
+## Korean market
+
+[`10-korea-market.md`](.claude/skills/job-application-assistant/10-korea-market.md) layers Korean-market conventions on top of the universal rules; it never relaxes one (accuracy, verified company claims and the untrusted-posting boundary apply unchanged). It switches on when a posting is in Korean or from a Korean employer, comes from a Korean board (원티드, 사람인, 잡코리아, 점핏, 리멤버, 로켓펀치, ...), or the profile says `Market: South Korea`.
+
+- **Which documents to make.** 이력서, 국문/영문 variants, 경력기술서, a free-form 자기소개서, or numbered 자기소개서 questions, each picked from what the posting asks for. Documents follow the posting's language.
+- **국문 이력서 conventions.** Section order for 경력직 and 신입, `YYYY.MM` dates, bullets ending in 명사형, 직급 kept as they were, and a privacy default that leaves out 사진, 주민등록번호, 생년월일 and other items the 채용절차법 restricts.
+- **문항형 자기소개서.** Plain-text answers per question, counted exactly the way the forms count them (공백 포함, 공백 제외, EUC-KR bytes) by `tools/self_intro_count.py`, aiming at 90-100% of each limit. `/apply` saves them as `self_intro.txt` in the application folder, and they can replace the cover letter.
+- **Korea Gate.** Runs with the Eligibility and Language Gates: 고용 형태, 경력 요건, 학력, 병역, 어학 점수 cutoff, 근무지. Plus a compensation checklist (퇴직금 포함 연봉, 포괄임금제, 수습 기간, 스톡옵션, ...), Korean red flags for culture fit, and Korean company research sources.
+- **Hiring process and interviews.** 수시 채용 and 공채 stages (코딩 테스트 or 과제, 인적성, 실무·임원 면접, 처우 협의) and what `/interview` adds for them.
+- **Typst templates.** `templates/cv/kr-resume` (single column, ATS-readable, `doc-lang: "ko"` or `"en"`) and `templates/cover_letters/kr-letter` (one page). Switch to them with `/add-template --use kr-resume` and `/add-template --use kr-letter`; the Docker image ships Typst and Noto CJK fonts, so no LaTeX is needed.
+
+The job portal skills in `.agents/skills/` are still the Danish ones plus `linkedin-search` and `freehire-search`; for Korean boards, `/scrape` falls back to web search, or you can generate a skill with `/add-portal`.
+
 ## Customization
+
+### Personal data stays out of git
+
+Tracked framework files keep their `[PLACEHOLDER]` tokens permanently: they hold the rules and the structure. Your values live in a git-ignored overlay with the same file name in `documents/profile/`, and every command reads the tracked file for its rules and the overlay for your facts. The full mapping is in `CLAUDE.md`, section "Personal Data Storage".
+
+To back up what git ignores (the profile, `documents/`, the tracker, generated CVs and cover letters, web UI runs), keep a separate private history next to the main one:
+
+```bash
+tools/private_data.sh init
+tools/private_data.sh save "after /setup"     # snapshot; does nothing when nothing changed
+tools/private_data.sh remote <private-repo-url> && tools/private_data.sh push --confirm-private
+```
+
+It lives in `.private-data.git`, never includes credential-like files (`.env`, keys, tokens), and refuses to push to a public GitHub repository.
 
 ### Which files to edit manually
 
-If you prefer editing files directly instead of using `/setup`:
+If you prefer editing files directly instead of using `/setup`, edit the overlays (copy a skeleton from `templates/profile/` first if the file does not exist yet):
 
-| File | What to change |
+| File in `documents/profile/` | What to change |
 |------|---------------|
-| `CLAUDE.md` | Your full profile (name, education, experience, skills, goals) |
+| `candidate.md` | Your profile summary (name, market, education, experience, skills, goals), imported into every session by `CLAUDE.md` |
 | `01-candidate-profile.md` | Structured version of your CV data |
 | `02-behavioral-profile.md` | Your behavioral assessment or self-assessment |
 | `04-job-evaluation.md` | Skill match areas, career goals, motivation filters |
 | `05-cv-templates.md` | Profile statement templates for different role types |
 | `07-interview-prep.md` | Your STAR examples from actual experience |
 | `search-queries.md` | Job search queries for your skills and location |
+| `master-cv.<ext>` | Your master CV in the active template's format (`.tex` or `.typ`) |
 
 ### Updating your search queries
 
@@ -323,12 +437,12 @@ The salary tool works with any salary data you provide (union statistics, Glassd
 To wipe your profile data and start fresh:
 
 ```
-/reset profile    # clears skill files, preserves framework rules
-/reset documents  # deletes files from documents/ folder
+/reset profile    # deletes your profile in documents/profile/; framework files are not changed
+/reset documents  # deletes files from documents/ folder, keeps documents/profile/
 /reset all        # both
 ```
 
-`/reset` shows exactly what will be deleted and requires you to type `RESET` to confirm. Nothing is deleted until you do.
+`/reset` shows exactly what will be deleted and requires you to type `RESET` to confirm. Nothing is deleted until you do. `/reset profile` also checks the tracked files for personal data an older `/setup` wrote into them and offers to clean those. In the web UI, **설정 > 데이터 초기화** clears the profile and the chat history after a typed confirmation.
 
 ### Staying up to date
 
@@ -384,7 +498,10 @@ ai-job-search/
 │   │   │   ├── 04-job-evaluation.md   # Scoring framework for job fit
 │   │   │   ├── 05-cv-templates.md     # LaTeX CV structure + tailoring rules
 │   │   │   ├── 06-cover-letter-templates.md # LaTeX cover letter templates
-│   │   │   └── 07-interview-prep.md   # STAR examples + interview framework
+│   │   │   ├── 07-interview-prep.md   # STAR examples + interview framework
+│   │   │   ├── 08-application-forms.md # Online application form fields
+│   │   │   ├── 09-web-research.md     # Company research + untrusted-input rules
+│   │   │   └── 10-korea-market.md     # Korean documents, 자기소개서, Korea Gate, hiring process
 │   │   ├── job-scraper/               # Job search orchestration
 │   │   └── upskill/                   # /upskill skill gap analysis and learning plan
 │   └── settings.json                  # Claude Code permissions (shared, scoped)
@@ -395,7 +512,14 @@ ai-job-search/
 │   ├── jobnet-search/                 # Jobnet.dk (Denmark, government portal)
 │   ├── linkedin-search/               # LinkedIn public job listings (country-agnostic)
 │   └── freehire-search/               # freehire.me tech job aggregator (multi-market, REST API)
-├── assets/                            # README artwork (Pip the mascot, animated SVG diagrams)
+├── assets/                            # README artwork (Pip the mascot, animated SVG diagrams, web UI screenshots)
+├── web/                               # Local web UI (Bun + Claude Agent SDK, React client)
+│   ├── README.md                      # Web UI guide (Korean)
+│   ├── src/server/                    # API, agent sessions, runs (.ajs/runs/), tracker moves, uploads
+│   ├── src/client/                    # Pages: home, jobs, applications, documents, profile, chat, settings
+│   └── tests/                         # bun test
+├── Dockerfile, compose.yaml           # Web UI image (Bun, Python, Typst, Noto CJK, poppler)
+├── env.example                        # Copy to .env: Claude credential, custom endpoint, port
 ├── cv/
 │   └── main_example.tex               # moderncv LaTeX template
 ├── cover_letters/
@@ -403,9 +527,14 @@ ai-job-search/
 │   ├── cover_example.tex              # Example cover letter (structural reference + CI smoke test)
 │   └── OpenFonts/                     # Lato + Raleway fonts
 ├── templates/                         # Custom templates registered via /add-template
-│   └── README.md                      # Folder layout instructions
+│   ├── README.md                      # Folder layout instructions
+│   ├── cv/kr-resume/                  # Korean/English CV (Typst)
+│   ├── cover_letters/kr-letter/       # Korean/English one-page cover letter (Typst)
+│   └── profile/                       # Placeholder skeletons /setup copies into documents/profile/
 ├── documents/                         # Career source materials for /setup Path A and /expand
 │   ├── README.md                      # Folder layout instructions
+│   ├── profile/                       # Your profile overlays written by /setup (git-ignored)
+│   ├── attachments/                   # Files dropped into the web UI chat (git-ignored)
 │   ├── cv/                            # Master CV (PDF or .tex)
 │   ├── linkedin/                      # LinkedIn profile export (PDF)
 │   ├── diplomas/                      # Degree certificates and transcripts
@@ -421,8 +550,12 @@ ai-job-search/
 │   ├── install_portal_clis.py         # Install every discovered portal CLI (bun install)
 │   ├── lint_skills.py                 # CI lint for skills, commands, settings.json
 │   ├── posting_guard.py               # Integrity gate: strip hidden text, flag injection-shaped lines
+│   ├── private_data.sh                # Private git history for the git-ignored personal files
+│   ├── rank_state.py                  # /rank state in seen_jobs.json (verdicts, gates, fit bands)
 │   ├── robots_check.py                # Gate the browser-header retry against robots.txt
 │   ├── security_guards.py             # CI guards: permission allow/ask/deny, skill grants, gitignore, manifests
+│   ├── self_intro_count.py            # 자기소개서 character counts (with/without spaces, EUC-KR bytes)
+│   ├── tracker_state.py               # Validated tracker status moves under a lock (used by the web board)
 │   ├── upstream_triage.py             # Sort upstream commits into worth-reviewing vs probably-skip
 │   ├── verify_layout.py               # Measure a compiled PDF's page layout (holes, orphans, footer collisions)
 │   ├── verify_pdf.py                  # Verify a compiled PDF's page count and extractable text
@@ -430,6 +563,7 @@ ai-job-search/
 ├── job_scraper/                       # Scraper state (seen jobs, results)
 ├── gmail_sync/                        # /gmail-sync state (processed message IDs, last sync date)
 ├── upskill/                           # /upskill report output (markdown reports per run)
+├── .ajs/runs/                         # Web UI 지원서 만들기 / 자기소개서 run records (git-ignored)
 ├── job_search_tracker.csv             # Application tracking spreadsheet
 └── SETUP.md                           # Detailed setup guide
 ```
