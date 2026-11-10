@@ -3,6 +3,8 @@ import type { ChatEvent, LiveEvent, RetryInfo, SessionState } from "../server/ag
 import type { WebMode } from "../server/modes.ts";
 import type { AppIdentity, ApplyRun as ApplyRunRecord, RunRecord, SelfIntroRun as SelfIntroRunRecord } from "../server/runs.ts";
 import type { SelfIntroQuestion } from "../server/selfIntro.ts";
+import type { Guard, NoteEntry, Step } from "../server/applications.ts";
+import type { Proposal, StepDraft } from "../server/threads.ts";
 import type { ApplyParams, ResumeDecision } from "../server/results.ts";
 import { commandLabel } from "./labels.ts";
 import { panel } from "./panel.ts";
@@ -169,6 +171,61 @@ export function safeHttpUrl(url: unknown): string | null {
 export type TaskMeta = { title?: string; kind?: string };
 
 export type ApplyOptions = Omit<ApplyParams, "posting" | "acceptFlaggedPosting">;
+
+export type { Guard, NoteEntry, Proposal, Step, StepDraft };
+
+export type ThreadView = {
+  id: string;
+  title: string;
+  application: AppIdentity;
+  createdAt: number;
+  lastActivity: number;
+  sessionId: string | null;
+  resumable: boolean;
+  // Another application to the same company and role.
+  earlier: boolean;
+  // False for a thread shown here by guess (its row's date changed outside the web): link it before saving.
+  linked: boolean;
+  proposals: Proposal[];
+};
+
+export type AppDetail = {
+  folder: string | null;
+  files: string[];
+  guard: Guard;
+  notes: NoteEntry[];
+  steps: Step[];
+  otherSteps: number;
+  // Steps saved under a date no tracker row has any more (a move that could not take them along).
+  orphans: { date: string; count: number }[];
+  stepsBroken: boolean;
+  threads: ThreadView[];
+};
+export type AppItem = AppIdentity & { next: { title: string; kind: string; due: string } };
+
+const appQuery = (a: AppIdentity) => new URLSearchParams({ date: a.date, company: a.company, role: a.role }).toString();
+export const useApplicationDetail = (a: AppIdentity) => useFetch<AppDetail>(`/api/applications/detail?${appQuery(a)}`, { live: true });
+export const useApplicationItems = () => useFetch<AppItem[]>("/api/applications/items", { live: true });
+
+export async function startAppThread(application: AppIdentity, text: string) {
+  const r = await sendJSON<{ session: SessionSummary }>("/api/applications/threads", "POST", { application, text });
+  panel.show(r.session.id);
+  return r;
+}
+
+export async function openAppThread(id: string) {
+  const s = await sendJSON<SessionSummary>(`/api/applications/threads/${encodeURIComponent(id)}/open`, "POST");
+  panel.show(s.id);
+  return s;
+}
+
+export const bindAppThread = (id: string, application: AppIdentity) => sendJSON(`/api/applications/threads/${encodeURIComponent(id)}/bind`, "POST", { application });
+export const deleteAppThread = (id: string) => sendJSON(`/api/applications/threads/${encodeURIComponent(id)}`, "DELETE");
+export const saveNote = (body: { application: AppIdentity; text: string } | { sessionId: string; text: string }) => sendJSON("/api/applications/notes", "POST", body);
+export const stepAction = (application: AppIdentity, op: { add: StepDraft } | { set: { id: string; status: Step["status"] } } | { remove: string } | { adopt: string }) =>
+  sendJSON<{ steps: Step[] }>("/api/applications/steps", "POST", { application, ...op });
+export const proposalAction = (thread: string, proposal: string, body: { save: false } | { save: true; memo: boolean; steps: number[] }) =>
+  sendJSON<Proposal>(`/api/applications/threads/${encodeURIComponent(thread)}/proposals/${encodeURIComponent(proposal)}`, "POST", body);
 
 export async function startSelfIntro(application: AppIdentity, body: { questions: SelfIntroQuestion[] } | { revise: { index: number; feedback: string } }) {
   const run = await sendJSON<Run>("/api/runs", "POST", { kind: "self-intro", application, ...body });

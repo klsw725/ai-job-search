@@ -44,14 +44,26 @@ company and role shares the folder with the earlier one. With
 `--record-cover`, an empty `cover_letter_file` becomes the saved path
 (apply.md Step 5a: the answers replace the cover letter).
 
+`append-note` and `write-steps` keep the web UI's per-application memo
+(notes.md, dated bullets) and steps such as a coding test (steps.json) in the
+archive folder, under the same lock and no-symlink handling, at any status: a
+memo about a submitted application is normal. Both need exactly one row for
+the application. `write-steps` replaces the file only when it still has the
+sha256 the caller read (`--expect-sha256 none` when it had none), so a
+change made in between is refused with exit 3 instead of overwritten.
+
 Usage:
   python3 tools/tracker_state.py transition --company C --role R --date YYYY-MM-DD
       --expect STATUS --status STATUS [--note TEXT] [--today YYYY-MM-DD]
   python3 tools/tracker_state.py write-self-intro --company C --role R --date YYYY-MM-DD
       [--owner SHA256 ...] [--record-cover] < answers.txt
+  python3 tools/tracker_state.py append-note --company C --role R --date YYYY-MM-DD
+      [--source web|ai] [--now "YYYY-MM-DD HH:MM"] < note.txt
+  python3 tools/tracker_state.py write-steps --company C --role R --date YYYY-MM-DD
+      --expect-sha256 SHA256|none < steps.json
 
 Prints JSON on stdout. Exit 0 on success, 1 on a usage or state error, 3 when
-the row's current status is not the expected one.
+the row's current status is not the expected one, or steps.json changed.
 """
 
 import argparse
@@ -65,7 +77,7 @@ import stat
 import sys
 import tempfile
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 try:
@@ -494,6 +506,175 @@ def write_self_intro(args: argparse.Namespace, data: bytes) -> dict[str, object]
     return {"ok": True, "written": True, "path": path, "sha256": digest, "cover_recorded": cover_recorded}
 
 
+NOTES = "notes.md"
+STEPS = "steps.json"
+NOTE_SOURCES = {"web": "직접 입력", "ai": "AI 답변 저장"}
+MAX_NOTE = 8000
+STEP_KINDS = {"coding_test", "assignment", "interview", "document", "other"}
+STEP_STATUSES = {"todo", "done", "skipped"}
+ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def single_row(args: argparse.Namespace, header: list[str], body: list[list[str]]) -> dict[str, str]:
+    col = {name: i for i, name in enumerate(header)}
+
+    def cell(r: list[str], name: str) -> str:
+        i = col.get(name)
+        return r[i] if i is not None and i < len(r) else ""
+
+    matches = [
+        r for r in body
+        if cell(r, "company").strip().casefold() == args.company.strip().casefold()
+        and cell(r, "role").strip().casefold() == args.role.strip().casefold()
+        and cell(r, "date").strip() == args.date.strip()
+    ]
+    if len(matches) != 1:
+        raise StateError("no single tracker row matches that company, role and date")
+    return {name: cell(matches[0], name) for name in col}
+
+
+@contextmanager
+def archive_dir(root: Path, company: str, role: str):
+    """The application's archive folder, created if missing, reached one
+    component at a time from the repo's handle with no symlink allowed."""
+    if not archive_name(company, role):
+        raise StateError("company and role have no letters or digits")
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    opened = [root_fd]
+    try:
+        docs_fd = open_dir(root_fd, "documents", True)
+        opened.append(docs_fd)
+        apps_fd = open_dir(docs_fd, "applications", True)
+        opened.append(apps_fd)
+        folder = find_archive(apps_fd, company, role) or archive_name(company, role)
+        dir_fd = open_dir(apps_fd, folder, True)
+        opened.append(dir_fd)
+        yield dir_fd, folder
+    finally:
+        for fd in reversed(opened):
+            os.close(fd)
+
+
+def read_text_at(dir_fd: int, name: str) -> str | None:
+    try:
+        return read_at(dir_fd, name)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise StateError(f"{name} in the archive is not a plain text file") from exc
+
+
+def read_bytes_at(dir_fd: int, name: str) -> bytes | None:
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise StateError(f"{name} in the archive is not a plain file") from exc
+    with os.fdopen(fd, "rb") as fh:
+        return fh.read()
+
+
+def note_entry(text: str, stamp: str, app_date: str, source: str) -> str:
+    """One dated bullet; later lines are indented so the bullet stays one item."""
+    lines = [line.rstrip() for line in text.strip().replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    out = [f"- {stamp} (지원 {app_date}, {NOTE_SOURCES[source]}): {lines[0]}"]
+    out += [f"  {line}" if line else "" for line in lines[1:]]
+    return "\n".join(out) + "\n"
+
+
+def append_note(args: argparse.Namespace, data: bytes) -> dict[str, object]:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise StateError("the note is not UTF-8 text") from exc
+    if not text.strip():
+        raise StateError("the note is empty")
+    if len(text) > MAX_NOTE:
+        raise StateError(f"the note is longer than {MAX_NOTE} characters")
+    stamp = args.now or datetime.now().strftime("%Y-%m-%d %H:%M")
+    if not re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$", stamp):
+        raise StateError("--now must be YYYY-MM-DD HH:MM")
+    root = Path(args.root).resolve()
+    tracker = root / "job_search_tracker.csv"
+    with locked(tracker):
+        header, body = read_rows(tracker)
+        row = single_row(args, header, body)
+        try:
+            with archive_dir(root, row["company"], row["role"]) as (dir_fd, folder):
+                existing = read_text_at(dir_fd, NOTES)
+                head = existing if existing is not None else f"# 메모 · {row['company']} / {row['role']}\n\n"
+                if head and not head.endswith("\n"):
+                    head += "\n"
+                write_at(dir_fd, NOTES, (head + note_entry(text, stamp, row["date"].strip(), args.source)).encode("utf-8"))
+        except OSError as exc:
+            raise StateError(f"could not save {NOTES}: {exc}") from exc
+    return {"ok": True, "path": f"documents/applications/{folder}/{NOTES}"}
+
+
+def check_steps(doc: object) -> list[dict[str, object]]:
+    if not isinstance(doc, dict) or not isinstance(doc.get("steps"), list):
+        raise StateError('steps must be a JSON object {"steps": [...]}')
+    out = []
+    seen = set()
+    for i, s in enumerate(doc["steps"]):
+        where = f"step {i + 1}"
+        if not isinstance(s, dict):
+            raise StateError(f"{where} is not an object")
+        sid, title = s.get("id"), s.get("title")
+        if not isinstance(sid, str) or not re.match(r"^[\w-]{1,40}$", sid) or sid in seen:
+            raise StateError(f"{where}: id must be a unique short identifier")
+        seen.add(sid)
+        if not isinstance(title, str) or not title.strip() or len(title) > 200:
+            raise StateError(f"{where}: title is required (at most 200 characters)")
+        if s.get("kind") not in STEP_KINDS or s.get("status") not in STEP_STATUSES:
+            raise StateError(f"{where}: unknown kind or status")
+        app = s.get("application")
+        if not isinstance(app, str) or not ISO_DATE.match(app):
+            raise StateError(f"{where}: application must be the tracker date")
+        due, link, note = s.get("due"), s.get("link"), s.get("note")
+        if due is not None and (not isinstance(due, str) or not ISO_DATE.match(due)):
+            raise StateError(f"{where}: due must be YYYY-MM-DD")
+        if link is not None and (not isinstance(link, str) or not re.match(r"^https?://\S+$", link) or len(link) > 2000):
+            raise StateError(f"{where}: link must be an http(s) URL")
+        if note is not None and (not isinstance(note, str) or len(note) > 1000):
+            raise StateError(f"{where}: note is at most 1000 characters")
+        keep = {"id": sid, "kind": s["kind"], "title": title.strip(), "status": s["status"], "application": app}
+        for key in ("due", "link", "note"):
+            if s.get(key):
+                keep[key] = s[key]
+        if isinstance(s.get("from"), dict):
+            src = s["from"]
+            keep["from"] = {k: v for k, v in src.items() if k in ("thread", "proposal") and isinstance(v, str) and len(v) <= 64}
+            if isinstance(src.get("item"), int) and not isinstance(src.get("item"), bool) and 0 <= src["item"] < 100:
+                keep["from"]["item"] = src["item"]
+        out.append(keep)
+    return out
+
+
+def write_steps(args: argparse.Namespace, data: bytes) -> dict[str, object]:
+    try:
+        steps = check_steps(json.loads(data.decode("utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise StateError(f"steps are not JSON: {exc}") from exc
+    payload = (json.dumps({"version": 1, "steps": steps}, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    root = Path(args.root).resolve()
+    tracker = root / "job_search_tracker.csv"
+    with locked(tracker):
+        header, body = read_rows(tracker)
+        row = single_row(args, header, body)
+        try:
+            with archive_dir(root, row["company"], row["role"]) as (dir_fd, folder):
+                existing = read_bytes_at(dir_fd, STEPS)
+                # The bytes on disk, as the server hashed them: a text read would
+                # turn CRLF into LF and never match.
+                current = hashlib.sha256(existing).hexdigest() if existing is not None else "none"
+                if current != args.expect_sha256:
+                    return {"ok": False, "error": "changed", "current_sha256": current}
+                write_at(dir_fd, STEPS, payload)
+        except OSError as exc:
+            raise StateError(f"could not save {STEPS}: {exc}") from exc
+    return {"ok": True, "path": f"documents/applications/{folder}/{STEPS}", "sha256": hashlib.sha256(payload).hexdigest()}
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -513,10 +694,27 @@ def main(argv=None) -> int:
     w.add_argument("--owner", action="append", help="sha256 of a self_intro.txt this application wrote earlier")
     w.add_argument("--record-cover", action="store_true")
     w.add_argument("--root", default=str(ROOT), help=argparse.SUPPRESS)
+    for name, helptext in (("append-note", "append a dated memo from stdin to the archive's notes.md"), ("write-steps", "replace the archive's steps.json from stdin")):
+        n = sub.add_parser(name, help=helptext)
+        n.add_argument("--company", required=True)
+        n.add_argument("--role", required=True)
+        n.add_argument("--date", required=True)
+        n.add_argument("--root", default=str(ROOT), help=argparse.SUPPRESS)
+        if name == "append-note":
+            n.add_argument("--source", choices=sorted(NOTE_SOURCES), default="web")
+            n.add_argument("--now", default="", help="timestamp to record, YYYY-MM-DD HH:MM (default: now)")
+        else:
+            n.add_argument("--expect-sha256", required=True, help="sha256 of the steps.json the caller read, or none")
     args = parser.parse_args(argv)
 
+    commands = {
+        "transition": lambda: transition(args),
+        "write-self-intro": lambda: write_self_intro(args, sys.stdin.buffer.read()),
+        "append-note": lambda: append_note(args, sys.stdin.buffer.read()),
+        "write-steps": lambda: write_steps(args, sys.stdin.buffer.read()),
+    }
     try:
-        result = transition(args) if args.command == "transition" else write_self_intro(args, sys.stdin.buffer.read())
+        result = commands[args.command]()
     except StateError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         return 1

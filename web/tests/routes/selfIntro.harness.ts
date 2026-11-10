@@ -2,7 +2,8 @@
 // Agent SDK mocked and Bun.serve intercepted (no port is opened). It needs its
 // own process: the server reads REPO_DIR when first imported, so tests/routes.test.ts
 // runs this file with `bun test` as a child.
-import { afterAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { fakes, type Fake } from "./fakeSdk.ts";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,47 +57,6 @@ for (const company of ["Submitted", "Duplicate"]) {
 }
 await mkdir(join(repo, "documents/applications/again_engineer"), { recursive: true });
 await writeFile(join(repo, "documents/applications/again_engineer/self_intro.txt"), "earlier submitted answers");
-
-type Fake = { options: Record<string, any>; inputs: any[]; emit: (m: unknown) => void; end: () => void };
-const fakes: Fake[] = [];
-mock.module("@anthropic-ai/claude-agent-sdk", () => ({
-  query: ({ prompt, options }: { prompt: AsyncIterable<unknown>; options: Record<string, any> }) => {
-    const queue: unknown[] = [];
-    let wake: (() => void) | null = null;
-    let done = false;
-    const fake: Fake = {
-      options,
-      inputs: [],
-      emit: (m) => {
-        queue.push(m);
-        wake?.();
-      },
-      end: () => {
-        done = true;
-        wake?.();
-      },
-    };
-    fakes.push(fake);
-    void (async () => {
-      for await (const m of prompt) fake.inputs.push(m);
-    })();
-    return {
-      async *[Symbol.asyncIterator]() {
-        while (true) {
-          if (queue.length) yield queue.shift();
-          else if (done) return;
-          else await new Promise<void>((r) => (wake = r));
-        }
-      },
-      interrupt: async () => undefined,
-      setPermissionMode: async () => undefined,
-      close: () => fake.end(),
-    };
-  },
-  listSessions: async () => [],
-  getSessionMessages: async () => [],
-  deleteSession: async () => undefined,
-}));
 
 let serveOptions: { fetch: (req: Request, srv: unknown) => Promise<Response> } | null = null;
 const realServe = Bun.serve;

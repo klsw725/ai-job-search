@@ -8,7 +8,7 @@ import { currentActivity, lastReply, progressOf } from "./progress.ts";
 import { ModeSelect, OutputFiles, PermissionCard, Progress, QuestionCard, ReplyActions, RetryNotice, useOutputs, useResolved, useSession, useToolResults } from "./session.tsx";
 import { ErrorBox, Markdown } from "./ui.tsx";
 
-function TaskView({ id, since, title }: { id: string; since: number | null; title: string }) {
+function TaskView({ id, since, title, kind }: { id: string; since: number | null; title: string; kind?: string }) {
   const { events, state, retry, draft, error } = useSession(id);
   const results = useToolResults(events);
   const resolved = useResolved(events);
@@ -66,7 +66,7 @@ function TaskView({ id, since, title }: { id: string; since: number | null; titl
         <div className={`task-reply ${succeeded ? "final" : ""}`}>
           <div className="muted small">{succeeded ? "결과" : "AI 메시지"}</div>
           <Markdown text={reply} />
-          {!draft && <ReplyActions text={reply} name={title} />}
+          {!draft && <ReplyActions text={reply} name={title} noteSession={kind === "app-chat" ? id : undefined} />}
         </div>
       )}
 
@@ -152,7 +152,7 @@ export function TaskPanel({ sessions, shownElsewhere }: { sessions: SessionSumma
               {run?.state === "succeeded" ? "완성된 지원서 보기" : "결과 확인하기"}
             </a>
           )}
-          <TaskView key={sessionId} id={sessionId} since={started.current.get(sessionId) ?? null} title={current?.title ?? "AI 작업"} />
+          <TaskView key={sessionId} id={sessionId} since={started.current.get(sessionId) ?? null} title={current?.title ?? "AI 작업"} kind={current?.kind} />
         </>
       ) : (
         <p className="muted">진행 중인 작업이 없어요. 화면의 버튼을 누르면 AI가 여기서 일을 시작해요.</p>

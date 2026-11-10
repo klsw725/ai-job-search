@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { fileUrl, runCommand, safeHttpUrl, useFetch, useRuns, type ApplyRun } from "../api.ts";
+import { fileUrl, runCommand, safeHttpUrl, useApplicationDetail, useFetch, useRuns, type ApplyRun } from "../api.ts";
+import { ApplicationChatCard, NotesCard, StepsCard } from "../appChat.tsx";
 import { RUN_STATE_TEXT, RunResult, runStateKey } from "../apply.tsx";
 import { COLUMNS, applicationId, canonicalStatus, columnOf, movedRow, parseApplicationId, planMove, runForRow, type ColumnId } from "../pipeline.ts";
 import { SelfIntroCard } from "../selfIntro.tsx";
 import { CommandButton, Deadline, EmptyState, ErrorBox, Icon, PageHeader, StatusChip } from "../ui.tsx";
-import { MoveDialog, move, pdfFor, type Pending } from "./Tracker.tsx";
+import { MoveDialog, move, pdfFor, takeMoveWarning, type Pending } from "./Tracker.tsx";
 
 type Row = Record<string, string>;
 type FileEntry = { path: string };
@@ -81,7 +82,10 @@ export function Application({ id }: { id: string }) {
   const runs = useRuns();
   const [pending, setPending] = useState<Pending | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // A move from the previous page (its date changed, so this page is new) may have left a warning.
+  const [notice, setNotice] = useState<string | null>(() => takeMoveWarning());
   const key = parseApplicationId(id);
+  const detail = useApplicationDetail(key ?? { date: "", company: "", role: "" });
   const row = key ? (tracker.data?.rows ?? []).find((r) => r.date === key.date && r.company === key.company && r.role === key.role) : undefined;
   const moved = key && tracker.data && !row ? movedRow(tracker.data.rows, key) : undefined;
   const movedId = moved ? applicationId(moved) : null;
@@ -91,6 +95,7 @@ export function Application({ id }: { id: string }) {
   const reload = () => {
     tracker.reload();
     runs.reload();
+    detail.reload();
   };
 
   if (!key) return <EmptyState icon="clipboard" title="지원을 찾을 수 없어요" action={<a className="btn" href="#/tracker">내 지원으로</a>} />;
@@ -108,6 +113,7 @@ export function Application({ id }: { id: string }) {
   const follow = (next: Row) => {
     reload();
     if (next.date !== row.date) location.replace(`#/applications/${applicationId(next)}`);
+    else setNotice(takeMoveWarning());
   };
   const onMove = (to: ColumnId) => {
     const plan = planMove(row.status, to);
@@ -154,6 +160,7 @@ export function Application({ id }: { id: string }) {
         )}
       </div>
       <ErrorBox error={err} />
+      {notice && <p className="notice small">{notice}</p>}
       {run ? (
         <RunResult
           run={run}
@@ -186,13 +193,16 @@ export function Application({ id }: { id: string }) {
         </section>
       )}
       <SelfIntroCard row={row} runs={runs.data ?? []} applyRun={run} onChange={reload} />
+      <StepsCard row={row} detail={detail.data} column={column} onChange={detail.reload} onSuggestMove={() => onMove("interview")} />
+      <ApplicationChatCard row={row} detail={detail.data} onChange={detail.reload} />
+      <NotesCard row={row} detail={detail.data} onChange={detail.reload} />
       <section className="card">
         <header className="card-head">
           <h2>다음 할 일</h2>
         </header>
         {row.notes && (
           <p className="small">
-            <b>메모</b> <span className="muted">{row.notes}</span>
+            <b>지원 기록</b> <span className="muted">{row.notes}</span>
           </p>
         )}
         <div className="row wrap">

@@ -6,6 +6,7 @@ import {
   fileUrl,
   getJSON,
   live,
+  saveNote,
   stamp,
   useActiveSessions,
   useFetch,
@@ -365,10 +366,30 @@ export function OutputFiles({ outputs, zipName, title = "이번 작업에서 만
 
 // Copy or save one AI reply: much of the work (fit reviews, interview notes)
 // lives only in the reply text, not in a file.
-export function ReplyActions({ text, name }: { text: string; name: string }) {
+export function ReplyActions({ text, name, noteSession }: { text: string; name: string; noteSession?: string }) {
   const [copied, setCopied] = useState(false);
+  // Tied to the reply it was for: a new reply in the same place starts unsaved.
+  const [noteState, setNoteState] = useState<{ text: string; status: string } | null>(null);
+  const noted = noteState?.text === text ? noteState.status : null;
   return (
     <div className="reply-actions">
+      {noteSession && (
+        <button
+          type="button"
+          className="btn ghost small-btn"
+          disabled={noted === "saved" || noted === "saving"}
+          onClick={() => {
+            const forText = text;
+            setNoteState({ text: forText, status: "saving" });
+            void saveNote({ sessionId: noteSession, text: forText })
+              .then(() => setNoteState({ text: forText, status: "saved" }))
+              .catch((e: Error) => setNoteState({ text: forText, status: e.message }));
+          }}
+        >
+          <Icon name={noted === "saved" ? "check" : "clipboard"} size={14} /> {noted === "saved" ? "메모에 저장했어요" : "메모로 저장"}
+        </button>
+      )}
+      {noted && noted !== "saved" && noted !== "saving" && <span className="error-box small">{noted}</span>}
       <button
         type="button"
         className="btn ghost small-btn"

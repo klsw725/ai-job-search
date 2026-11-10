@@ -7,6 +7,7 @@ import {
   type PermissionMode,
   type PermissionResult,
   type PermissionUpdate,
+  type McpServerConfig,
   type Query,
   type SDKMessage,
   type SDKUserMessage,
@@ -197,9 +198,23 @@ export type RunOptions = { systemAppend: string; outputSchema: Record<string, un
 
 export const runKey = (run: RunOptions | undefined) => (run ? JSON.stringify([run.systemAppend, run.outputSchema, run.disallow ?? []]) : null);
 
+// A chat with its own context: instructions appended to the system prompt,
+// tools it may never use or may use without asking, and in-process tools. Unlike a
+// run it may ask questions and ends with an ordinary reply.
+export type ChatOptions = {
+  systemAppend: string;
+  disallow?: string[];
+  allow?: string[];
+  mcpServers?: Record<string, McpServerConfig>;
+};
+
+const chatKey = (chat: ChatOptions | undefined) =>
+  chat ? JSON.stringify(["chat", chat.systemAppend, chat.disallow ?? [], chat.allow ?? [], Object.keys(chat.mcpServers ?? {}).sort()]) : null;
+
 export type SessionOptions = {
   resume?: string;
   run?: RunOptions;
+  chat?: ChatOptions;
   title?: string;
   kind?: string;
   history?: ChatEvent[];
@@ -223,7 +238,7 @@ export class ChatSession {
   sdkSessionId: string | null;
   title: string;
   readonly kind: string;
-  // The run contract this session was started with; null for a chat.
+  // The run or chat contract this session was started with; null for a plain chat.
   readonly runKey: string | null;
   mode: WebMode;
   state: SessionState = "idle";
@@ -252,7 +267,7 @@ export class ChatSession {
     this.sdkSessionId = opts.resume ?? null;
     this.title = opts.title ?? "새 대화";
     this.kind = opts.kind ?? "chat";
-    this.runKey = runKey(opts.run);
+    this.runKey = runKey(opts.run) ?? chatKey(opts.chat);
     this.mode = opts.mode === "bypassPermissions" && !bypassAllowed() ? "default" : (opts.mode ?? "default");
     if (opts.history) this.events = opts.history.slice(-MAX_EVENTS);
     this.q = query({
@@ -260,7 +275,7 @@ export class ChatSession {
       options: {
         cwd: REPO_DIR,
         settingSources: ["user", "project", "local"],
-        systemPrompt: { type: "preset", preset: "claude_code", append: opts.run ? `${WEB_APPEND}\n\n${opts.run.systemAppend}` : WEB_APPEND },
+        systemPrompt: { type: "preset", preset: "claude_code", append: opts.run ? `${WEB_APPEND}\n\n${opts.run.systemAppend}` : opts.chat ? `${WEB_APPEND}\n\n${opts.chat.systemAppend}` : WEB_APPEND },
         ...(opts.run ? { outputFormat: { type: "json_schema" as const, schema: opts.run.outputSchema } } : {}),
         ...(opts.env ? { env: opts.env } : {}),
         permissionMode: this.mode,
@@ -269,8 +284,15 @@ export class ChatSession {
         canUseTool: this.canUseTool,
         includePartialMessages: true,
         resume: opts.resume,
-        allowedTools: opts.rules?.allow,
-        disallowedTools: opts.run ? [...(opts.rules?.deny ?? []), "AskUserQuestion", ...(opts.run.disallow ?? [])] : opts.rules?.deny,
+        allowedTools: opts.chat?.allow?.length ? [...(opts.rules?.allow ?? []), ...opts.chat.allow] : opts.rules?.allow,
+        disallowedTools: opts.run
+          ? [...(opts.rules?.deny ?? []), "AskUserQuestion", ...(opts.run.disallow ?? [])]
+          : opts.chat?.disallow?.length
+            ? [...(opts.rules?.deny ?? []), ...opts.chat.disallow]
+            : opts.rules?.deny,
+        ...(opts.chat?.mcpServers ? { mcpServers: opts.chat.mcpServers } : {}),
+        // Only the chat's own tools: no MCP server from .mcp.json, user settings or plugins.
+        ...(opts.chat ? { strictMcpConfig: true } : {}),
         spawnClaudeCodeProcess: this.spawnProcess,
       },
     });
@@ -613,10 +635,17 @@ export class SessionManager {
   // session under its old parameters) is closed and, once its process has
   // exited, the transcript is resumed fresh. Shares resume()'s one-at-a-time map.
   resumeRun(sdkId: string, opts: SessionOptions): Promise<ChatSession> {
+    return this.resumeWith(sdkId, opts);
+  }
+
+  // A chat with its own context (an application's conversation) resumes the
+  // same way, so a plain chat that reopened its transcript cannot keep it
+  // without that context's tool limits.
+  resumeWith(sdkId: string, opts: SessionOptions): Promise<ChatSession> {
     if (this.frozen) return Promise.reject(new Error(FROZEN_MESSAGE));
     if (this.resuming.has(sdkId)) return Promise.reject(new Error(RESUME_BUSY));
     const started = (async () => {
-      const key = runKey(opts.run);
+      const key = runKey(opts.run) ?? chatKey(opts.chat);
       const live = [...this.sessions.values()].find((s) => s.sdkSessionId === sdkId && s.state !== "closed");
       if (live?.state === "running") throw new Error(RESUME_BUSY);
       if (live && live.runKey === key && live.summary().pending === 0) return live;

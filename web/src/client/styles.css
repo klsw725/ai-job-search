@@ -353,6 +353,26 @@ ol.answers { list-style: none; margin: 0; padding: 0; display: flex; flex-direct
 .self-intro .notice ul { margin: 6px 0; padding-left: 18px; }
 .modal:has(.q-editor) { width: min(640px, calc(100vw - 32px)); }
 
+/* Application conversation, memo and steps */
+.guard { margin: 0; }
+.guard.ok { color: var(--ok); }
+.guard.warn { color: var(--warn); font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border: 1px solid var(--line); background: #fbfcfd; border-radius: 999px; padding: 4px 10px; font-size: 13px; cursor: pointer; }
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+ul.thread-list, ul.note-list, ul.step-list, ul.proposal-items { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 0; }
+.thread-item { display: flex; align-items: center; gap: 6px; font-size: 13px; flex-wrap: wrap; }
+.proposal { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.pre-wrap { white-space: pre-wrap; }
+.note { border-left: 3px solid var(--line); padding: 2px 0 2px 10px; font-size: 14px; line-height: 1.6; }
+.step { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; padding: 6px 0; border-top: 1px solid var(--line); }
+.step:first-child { border-top: none; }
+.step.done > .check span, .step.skipped > .check span { color: var(--muted); text-decoration: line-through; }
+.step-note { flex-basis: 100%; padding-left: 26px; }
+.add-step { display: flex; flex-direction: column; gap: 6px; }
+.add-step input, .add-step select { padding: 5px 8px; font-size: 13px; }
+.step-badge { font-size: 12px; background: var(--accent-soft); color: var(--accent); border-radius: 6px; padding: 1px 6px; }
+
 /* Modal */
 .modal { width: min(460px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto; background: var(--panel); color: var(--text); border: none; border-radius: var(--radius-lg); box-shadow: 0 20px 48px rgb(16 24 40 / 0.25); padding: 0; }
 .modal::backdrop { background: rgb(16 24 40 / 0.35); }

@@ -2,7 +2,9 @@ import { basename, extname, join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { FROZEN_MESSAGE, RESUME_BUSY, SessionManager, type ChatSession, type LiveEvent, type OutgoingAttachment } from "./agent.ts";
 import { createReset } from "./reset.ts";
-import { countTexts, parseTransition, saveSelfIntro, transitionRow } from "./tracker.ts";
+import { appendNote, countTexts, parseTransition, saveSelfIntro, transitionRow, writeSteps } from "./tracker.ts";
+import { APP_CHAT_DISALLOW, PROPOSE_TOOL, appChatSystemAppend, applicationContext, parseNotes, parseSteps, parseStepsStrict, proposeServer, storedNoteText, readArchiveText, sha256, type Step } from "./applications.ts";
+import { ThreadStore, parseStepDraft, sameApplication, type StepDraft, type ThreadRecord } from "./threads.ts";
 import { RunStore, appKey, archiveFolder, boundRow, missingEvidence, oneAtATime, reconcile, runApplication, serialized, type AppIdentity, type ApplyRun, type RunRecord, type SelfIntroRun } from "./runs.ts";
 import {
   SELF_INTRO_RESULT_SCHEMA,
@@ -124,6 +126,8 @@ const publishSessions = (settled = false) => server?.publish("sessions", JSON.st
 
 const runs = new RunStore();
 await runs.load();
+const threads = new ThreadStore();
+await threads.load();
 
 const RUN_ERROR: Record<string, string> = {
   error_max_turns: "작업 단계가 너무 많아 멈췄어요.",
@@ -256,6 +260,7 @@ const manager = new SessionManager(
     server?.publish(`s:${session.id}`, JSON.stringify({ t: "event", id: session.id, ev }));
     if (ev.kind === "result") finishRun(session, ev);
     if (ev.kind === "state") noteTranscript(session, ev.sdkSessionId);
+    if (ev.kind === "state") noteThread(session, ev.sdkSessionId);
     if (ev.kind === "state" && ev.state === "closed") abandonRun(session);
     if (ev.kind === "state") publishSessions(ev.state !== "running");
     else if (ev.kind === "permission" || ev.kind === "question" || ev.kind === "resolved" || ev.kind === "mode") publishSessions();
@@ -433,7 +438,15 @@ async function createSession(req: Request) {
     return fail(400, e instanceof Error ? e.message : String(e));
   }
   if (manager.isFrozen) return fail(409, FROZEN_MESSAGE);
-  const session = body.resume ? await manager.resume(body.resume) : await manager.create({ title, kind });
+  // An application conversation reopened from 지난 대화 keeps its context and tool limits.
+  const thread = body.resume ? threads.bySdk(body.resume) : undefined;
+  let session: ChatSession;
+  try {
+    session = thread ? await openThreadSession(thread) : body.resume ? await manager.resume(body.resume) : await manager.create({ title, kind });
+  } catch (e) {
+    if (e instanceof RunRequestError) return fail(e.status, e.message);
+    throw e;
+  }
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   if (prompt || attachments.length) {
     if (manager.isFrozen) return fail(409, FROZEN_MESSAGE);
@@ -448,8 +461,21 @@ const PROFILE_PARTS = PROFILE_DIR.split("/");
 // Deletes test leftovers: the profile folder's contents and this checkout's
 // Claude Code transcripts. The same Host/Origin guard as every API applies;
 // reset.ts requires the typed confirmation and the inventory the user saw.
+// A deleted transcript takes its application conversation record with it.
 const resetter = createReset({
-  sessions: manager,
+  sessions: {
+    freeze: () => manager.freeze(),
+    thaw: () => manager.thaw(),
+    busy: () => manager.busy(),
+    history: () => manager.history(),
+    hasLiveProcess: (id) => manager.hasLiveProcess(id),
+    stoppedByUs: (id, at) => manager.stoppedByUs(id, at),
+    stopAll: () => manager.stopAll(),
+    deleteTranscript: async (id) => {
+      await manager.deleteTranscript(id);
+      await threads.forgetTranscript(id);
+    },
+  },
   listProfile: () => listFolderEntries(PROFILE_PARTS),
   clearProfile: () => clearFolder(PROFILE_PARTS),
 });
@@ -709,11 +735,396 @@ async function moveTrackerRow(req: Request) {
   const { status, body } = await transitionRow(parsed);
   const moved = (body as { row?: Record<string, string> }).row;
   if (status === 200 && moved?.date && moved.date !== parsed.date) {
-    await runs.rebind({ date: parsed.date, company: parsed.company, role: parsed.role }, { date: moved.date, company: moved.company ?? parsed.company, role: moved.role ?? parsed.role });
+    const from = { date: parsed.date, company: parsed.company, role: parsed.role };
+    const to = { date: moved.date, company: moved.company ?? parsed.company, role: moved.role ?? parsed.role };
+    await runs.rebind(from, to);
+    await threads.rebind(from, to);
+    const warning = await rebindSteps(from, to).catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
+    if (warning) (body as Record<string, unknown>).warning = warning;
   }
   // Same signal a finished task sends: every page holding tracker data refetches.
   if (status === 200) publishSessions(true);
   return json(body, status);
+}
+
+// ---- Application conversations, memos and steps ----
+
+const identityOf = (r: Record<string, string>): AppIdentity => ({ date: (r.date ?? "").trim(), company: r.company ?? "", role: r.role ?? "" });
+
+function parseApp(v: unknown): AppIdentity | null {
+  const a = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  const ok = (s: unknown, max: number): s is string => typeof s === "string" && !!s.trim() && s.length <= max;
+  if (!ok(a.date, 10) || !/^\d{4}-\d{2}-\d{2}$/.test(a.date) || !ok(a.company, 200) || !ok(a.role, 300)) return null;
+  return { date: a.date, company: a.company, role: a.role };
+}
+
+async function exactRow(app: AppIdentity) {
+  const { rows } = await readTracker();
+  const matches = rows.filter((r) => sameApplication(identityOf(r), app));
+  return { rows, row: matches.length === 1 ? matches[0]! : null };
+}
+
+// The row a conversation saves to: exactly the one it is bound to. A thread
+// the page shows by guessing (runs.ts boundRow, a date changed outside the
+// web) saves nothing until the user links it (POST .../bind).
+async function threadRow(t: ThreadRecord) {
+  return (await exactRow(t.application)).row;
+}
+
+const NO_ROW = "지원 기록에서 이 지원을 하나로 찾지 못했어요. 화면을 새로고침해 주세요.";
+const UNLINKED = "이 대화가 연결된 지원 기록을 찾지 못했어요. 지원 상세의 대화 목록에서 [이 지원에 연결]을 누른 뒤 다시 해 주세요.";
+const BROKEN_STEPS = "전형 단계 파일을 읽을 수 없어 바꾸지 않았어요. 파일 내용을 고친 뒤 다시 해 주세요.";
+
+function chatOptions(t: ThreadRecord, ctx: NonNullable<Awaited<ReturnType<typeof applicationContext>>>) {
+  return {
+    systemAppend: appChatSystemAppend(ctx),
+    disallow: APP_CHAT_DISALLOW,
+    allow: [PROPOSE_TOOL],
+    mcpServers: { ajs: proposeServer((p) => addProposal(t.id, p)) },
+  };
+}
+
+async function addProposal(threadId: string, p: { memo?: string; steps: StepDraft[] }) {
+  const t = threads.get(threadId);
+  if (!t) return false;
+  t.proposals = [...t.proposals, { id: `pr_${crypto.randomUUID().slice(0, 8)}`, createdAt: Date.now(), ...p, state: "pending" as const }].slice(-20);
+  await threads.save(t);
+  publishSessions(true);
+  return true;
+}
+
+function noteThread(session: ChatSession, sdkSessionId: string | null) {
+  const t = threads.bySession(session.id);
+  if (!t) return;
+  if (sdkSessionId) t.sdkSessionId = sdkSessionId;
+  t.lastActivity = Date.now();
+  if (session.state === "closed") t.sessionId = null;
+  void threads.save(t);
+}
+
+async function contextFor(app: AppIdentity, row: Record<string, string>) {
+  const ctx = await applicationContext(app, row);
+  if (!ctx) throw new RunRequestError(400, "회사와 직무 이름으로 보관 폴더를 찾을 수 없어요");
+  return ctx;
+}
+
+// A live session of this conversation is reused; otherwise the transcript is
+// resumed under the conversation's current context (files added since show up).
+async function openThreadSession(t: ThreadRecord): Promise<ChatSession> {
+  if (manager.isFrozen) throw new RunRequestError(409, FROZEN_MESSAGE);
+  const live = t.sessionId ? manager.get(t.sessionId) : undefined;
+  if (live && live.state !== "closed") return live;
+  if (!t.sdkSessionId) throw new RunRequestError(409, "이 대화의 기록이 없어요. 새 대화를 시작해 주세요.");
+  // Reading needs no exact binding: the guessed row only supplies the context.
+  const { rows } = await readTracker();
+  const row = (await threadRow(t)) ?? boundRow(t.application, rows);
+  if (!row) throw new RunRequestError(409, NO_ROW);
+  const ctx = await contextFor(identityOf(row), row);
+  let session: ChatSession;
+  try {
+    session = await manager.resumeWith(t.sdkSessionId, { title: t.title, kind: "app-chat", chat: chatOptions(t, ctx) });
+  } catch (e) {
+    throw new RunRequestError(409, e instanceof Error ? e.message : String(e));
+  }
+  t.sessionId = session.id;
+  t.lastActivity = Date.now();
+  await threads.save(t);
+  return session;
+}
+
+async function startThread(req: Request) {
+  if (manager.isFrozen) return fail(409, FROZEN_MESSAGE);
+  const body = ((await req.json().catch(() => null)) ?? {}) as { application?: unknown; text?: unknown };
+  const app = parseApp(body.application);
+  const text = typeof body.text === "string" ? body.text.trim().slice(0, 8000) : "";
+  if (!app) return fail(400, "어떤 지원인지 알 수 없어요");
+  if (!text) return fail(400, "AI에게 할 말을 적어 주세요");
+  const { row } = await exactRow(app);
+  if (!row) return fail(409, NO_ROW);
+  const identity = identityOf(row);
+  try {
+    const ctx = await contextFor(identity, row);
+    const t: ThreadRecord = {
+      id: `th_${crypto.randomUUID()}`,
+      kind: "app-chat",
+      title: `공고 대화 · ${identity.company} / ${identity.role}`.slice(0, 80),
+      application: identity,
+      sdkSessionId: null,
+      sessionId: null,
+      createdAt: Date.now(),
+      lastActivity: Date.now(),
+      proposals: [],
+    };
+    const session = await manager.create({ title: t.title, kind: "app-chat", chat: chatOptions(t, ctx) });
+    t.sessionId = session.id;
+    await threads.save(t);
+    session.send(text);
+    publishSessions(true);
+    return json({ thread: t, session: session.summary() });
+  } catch (e) {
+    if (e instanceof RunRequestError) return fail(e.status, e.message);
+    return fail(409, e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function openThread(id: string) {
+  const t = threads.get(id);
+  if (!t) return fail(404, "대화를 찾을 수 없어요");
+  try {
+    const session = await openThreadSession(t);
+    publishSessions(true);
+    return json(session.summary());
+  } catch (e) {
+    if (e instanceof RunRequestError) return fail(e.status, e.message);
+    throw e;
+  }
+}
+
+// Leaves the application's list; the record stays (hidden) so the transcript
+// keeps its tool limits if reopened from 지난 대화.
+async function deleteThread(id: string) {
+  const t = threads.get(id);
+  if (!t) return fail(404, "대화를 찾을 수 없어요");
+  if (t.sessionId) manager.remove(t.sessionId);
+  t.sessionId = null;
+  await threads.hide(t.id);
+  publishSessions(true);
+  return json({ ok: true });
+}
+
+// The user confirms that a thread the page found by guessing belongs here.
+async function bindThread(req: Request, id: string) {
+  const t = threads.get(id);
+  if (!t) return fail(404, "대화를 찾을 수 없어요");
+  const app = parseApp(((await req.json().catch(() => null)) ?? {}).application);
+  if (!app) return fail(400, "어떤 지원인지 알 수 없어요");
+  const { rows, row } = await exactRow(app);
+  if (!row) return fail(409, NO_ROW);
+  const identity = identityOf(row);
+  if (!threads.forApplication(identity, rows).some((x) => x.id === t.id)) return fail(409, "이 지원의 대화가 아니에요");
+  await threads.bind(t.id, identity);
+  publishSessions(true);
+  return json({ ok: true });
+}
+
+async function readSteps(app: AppIdentity) {
+  const folder = await archiveFolder(app.company, app.role);
+  const text = folder ? await readArchiveText(`${folder}/steps.json`) : null;
+  // steps is null when the file exists but cannot be fully read: then nothing may change it.
+  return { folder, text, steps: parseStepsStrict(text), shown: parseSteps(text), sha: sha256(text) };
+}
+
+// Steps belong to the application date they were saved for; a web move that
+// changes the row's date takes them along, as it does runs and conversations.
+// When that fails the steps stay under the old date and the page offers to
+// move them (adopt), so nothing is lost.
+async function rebindSteps(from: AppIdentity, to: AppIdentity): Promise<string | null> {
+  return appTurn(appKey(to), async () => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const { steps, sha } = await readSteps(to);
+      if (!steps) return BROKEN_STEPS;
+      if (!steps.some((s) => s.application === from.date)) return null;
+      const saved = await writeSteps(to, steps.map((s) => (s.application === from.date ? { ...s, application: to.date } : s)), sha);
+      if (saved.ok) return null;
+    }
+    return "전형 단계를 새 날짜로 옮기지 못했어요. 지원 상세에서 [이 지원으로 옮기기]를 눌러 주세요.";
+  });
+}
+
+const newStep = (d: StepDraft, app: AppIdentity, from?: Step["from"]): Step => ({ id: `st_${crypto.randomUUID().slice(0, 8)}`, ...d, status: "todo", application: app.date, ...(from ? { from } : {}) });
+
+const CHANGED = "그사이 다른 곳에서 단계가 바뀌었어요. 화면을 새로고침한 뒤 다시 해 주세요.";
+
+async function changeSteps(app: AppIdentity, change: (steps: Step[]) => Step[] | string) {
+  return appTurn(appKey(app), async () => {
+    const { steps, sha } = await readSteps(app);
+    if (!steps) return fail(409, BROKEN_STEPS);
+    const next = change(steps);
+    if (typeof next === "string") return fail(400, next);
+    const saved = await writeSteps(app, next, sha);
+    if (!saved.ok) return fail(409, CHANGED);
+    publishSessions(true);
+    return json({ steps: next });
+  });
+}
+
+async function stepsAction(req: Request) {
+  if (manager.isFrozen) return fail(409, FROZEN_MESSAGE);
+  const body = ((await req.json().catch(() => null)) ?? {}) as { application?: unknown; add?: unknown; set?: { id?: unknown; status?: unknown }; remove?: unknown; adopt?: unknown };
+  const app = parseApp(body.application);
+  if (!app) return fail(400, "어떤 지원인지 알 수 없어요");
+  const { row } = await exactRow(app);
+  if (!row) return fail(409, NO_ROW);
+  const identity = identityOf(row);
+  try {
+    // Steps left under a date no tracker row has any more (a failed move) are
+    // brought over by the user's click; another application's steps never are.
+    if (typeof body.adopt === "string") {
+      const from = body.adopt;
+      const { rows } = await readTracker();
+      return await changeSteps(identity, (steps) =>
+        orphanDates(identity, rows, steps).includes(from) ? steps.map((s) => (s.application === from ? { ...s, application: identity.date } : s)) : "옮길 수 있는 단계가 아니에요",
+      );
+    }
+    if (body.add !== undefined) {
+      const d = parseStepDraft(body.add);
+      if (typeof d === "string") return fail(400, d);
+      return await changeSteps(identity, (steps) => (steps.length >= 50 ? "단계는 50개까지 둘 수 있어요" : [...steps, newStep(d, identity)]));
+    }
+    const id = typeof body.set?.id === "string" ? body.set.id : typeof body.remove === "string" ? body.remove : "";
+    const status = body.set?.status;
+    if (body.set && status !== "todo" && status !== "done" && status !== "skipped") return fail(400, "알 수 없는 상태예요");
+    return await changeSteps(identity, (steps) => {
+      if (!steps.some((s) => s.id === id)) return "없는 단계예요";
+      return body.set ? steps.map((s) => (s.id === id ? { ...s, status: status as Step["status"] } : s)) : steps.filter((s) => s.id !== id);
+    });
+  } catch (e) {
+    return fail(409, e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function addNote(req: Request) {
+  if (manager.isFrozen) return fail(409, FROZEN_MESSAGE);
+  const body = ((await req.json().catch(() => null)) ?? {}) as { application?: unknown; sessionId?: unknown; text?: unknown };
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  if (!text) return fail(400, "메모 내용을 적어 주세요");
+  if (text.length > 8000) return fail(400, "메모가 너무 길어요 (최대 8천 자)");
+  // From the page: the user's own words. From a reply in the panel: a kept AI answer.
+  const thread = typeof body.sessionId === "string" ? threads.bySession(body.sessionId) : undefined;
+  if (typeof body.sessionId === "string" && !thread) return fail(404, "이 대화는 지원에 연결되어 있지 않아요");
+  const row = thread ? await threadRow(thread) : await (async () => {
+    const app = parseApp(body.application);
+    return app ? (await exactRow(app)).row : null;
+  })();
+  if (!row) return fail(409, NO_ROW);
+  const app = identityOf(row);
+  try {
+    await appTurn(appKey(app), () => appendNote(app, text, thread ? "ai" : "web"));
+  } catch (e) {
+    return fail(409, e instanceof Error ? e.message : String(e));
+  }
+  publishSessions(true);
+  return json({ ok: true });
+}
+
+async function proposalAction(req: Request, threadId: string, proposalId: string) {
+  if (manager.isFrozen) return fail(409, FROZEN_MESSAGE);
+  const t = threads.get(threadId);
+  const p = t?.proposals.find((x) => x.id === proposalId);
+  if (!t || !p) return fail(404, "제안을 찾을 수 없어요");
+  const body = ((await req.json().catch(() => null)) ?? {}) as { save?: unknown; memo?: unknown; steps?: unknown };
+  if (body.save !== true) {
+    return appTurn(appKey(t.application), async () => {
+      if (p.state !== "pending") return fail(409, "이미 처리한 제안이에요");
+      p.state = "dismissed";
+      await threads.save(t);
+      publishSessions(true);
+      return json(p);
+    });
+  }
+  const row = await threadRow(t);
+  if (!row) return fail(409, UNLINKED);
+  const app = identityOf(row);
+  return appTurn(appKey(app), async () => {
+    if (p.state !== "pending") return fail(409, "이미 처리한 제안이에요");
+    const memo = body.memo === true && !!p.memo;
+    const picked = Array.isArray(body.steps) ? [...new Set(body.steps.filter((i): i is number => Number.isInteger(i) && i >= 0 && i < p.steps.length))] : [];
+    if (!memo && !picked.length) return fail(400, "저장할 항목을 하나 이상 골라 주세요");
+    // Every item is recognised if an earlier attempt already saved it (a
+    // failure, a restart before the receipt was written), so a retry adds nothing twice.
+    try {
+      if (picked.length) {
+        const { steps, sha } = await readSteps(app);
+        if (!steps) return fail(409, BROKEN_STEPS);
+        const done = new Set(steps.filter((s) => s.from?.proposal === p.id).map((s) => s.from?.item));
+        const added = picked.filter((i) => !done.has(i)).map((i) => newStep(p.steps[i]!, app, { thread: t.id, proposal: p.id, item: i }));
+        if (added.length) {
+          const saved = await writeSteps(app, [...steps, ...added], sha);
+          if (!saved.ok) return fail(409, CHANGED);
+        }
+      }
+    } catch (e) {
+      return fail(409, e instanceof Error ? e.message : String(e));
+    }
+    if (memo) {
+      const folder = await archiveFolder(app.company, app.role);
+      const notes = folder ? parseNotes((await readArchiveText(`${folder}/notes.md`)) ?? "") : [];
+      const already = notes.some((n) => n.application === app.date && n.source === "AI 답변 저장" && n.text === storedNoteText(p.memo!));
+      if (!already) {
+        try {
+          await appendNote(app, p.memo!, "ai");
+        } catch (e) {
+          // Still pending: the next click saves only what is missing.
+          publishSessions(true);
+          return fail(409, `${picked.length ? "고른 단계는 저장했지만 " : ""}메모를 저장하지 못했어요. 다시 누르면 빠진 것만 저장해요. (${e instanceof Error ? e.message : String(e)})`);
+        }
+      }
+    }
+    p.state = "saved";
+    p.saved = { memo, steps: picked };
+    await threads.save(t);
+    publishSessions(true);
+    return json(p);
+  });
+}
+
+// Dates in steps.json that no tracker row for this company and role has any more.
+function orphanDates(app: AppIdentity, rows: Record<string, string>[], steps: Step[]) {
+  const live = new Set(rows.filter((r) => sameText(r.company ?? "", app.company) && sameText(r.role ?? "", app.role)).map((r) => (r.date ?? "").trim()));
+  return [...new Set(steps.map((s) => s.application))].filter((d) => d !== app.date && !live.has(d));
+}
+
+async function applicationDetail(url: URL) {
+  const app = parseApp({ date: url.searchParams.get("date"), company: url.searchParams.get("company"), role: url.searchParams.get("role") });
+  if (!app) return fail(400, "어떤 지원인지 알 수 없어요");
+  const { rows, row } = await exactRow(app);
+  if (!row) return fail(404, NO_ROW);
+  const identity = identityOf(row);
+  const ctx = await applicationContext(identity, row);
+  const notesText = ctx ? await readArchiveText(`${ctx.folder}/notes.md`) : null;
+  const { steps: strict, shown: steps } = await readSteps(identity);
+  const sameRole = (t: ThreadRecord) => sameText(t.application.company, identity.company) && sameText(t.application.role, identity.role);
+  const mine = new Set(threads.forApplication(identity, rows).map((t) => t.id));
+  const view = (t: ThreadRecord) => ({
+    id: t.id,
+    title: t.title,
+    application: t.application,
+    createdAt: t.createdAt,
+    lastActivity: t.lastActivity,
+    sessionId: t.sessionId && manager.get(t.sessionId)?.state !== "closed" ? t.sessionId : null,
+    resumable: !!t.sdkSessionId,
+    earlier: !mine.has(t.id),
+    // Saving needs the exact binding; a thread shown by guess must be linked first.
+    linked: !mine.has(t.id) || sameApplication(t.application, identity),
+    proposals: t.proposals,
+  });
+  const orphans = orphanDates(identity, rows, steps).map((date) => ({ date, count: steps.filter((s) => s.application === date).length }));
+  return json({
+    folder: ctx?.folder ?? null,
+    files: ctx?.files ?? [],
+    guard: ctx?.guard ?? { verdict: "missing", findings: 0 },
+    notes: notesText ? parseNotes(notesText) : [],
+    steps: steps.filter((s) => s.application === identity.date),
+    otherSteps: steps.filter((s) => s.application !== identity.date && !orphans.some((o) => o.date === s.application)).length,
+    orphans,
+    stepsBroken: strict === null,
+    threads: threads.list().filter((t) => mine.has(t.id) || sameRole(t)).map(view),
+  });
+}
+
+// The nearest open step with a date per application, for the board's badges.
+async function applicationItems() {
+  const { rows } = await readTracker();
+  const out = await Promise.all(
+    rows.map(async (r) => {
+      const app = identityOf(r);
+      if (!app.company.trim() || !app.role.trim()) return null;
+      const { shown: steps } = await readSteps(app).catch(() => ({ shown: [] as Step[] }));
+      const next = steps.filter((s) => s.application === app.date && s.status === "todo" && s.due).sort((a, b) => a.due!.localeCompare(b.due!))[0];
+      return next ? { ...app, next: { title: next.title, kind: next.kind, due: next.due } } : null;
+    }),
+  );
+  return out.filter(Boolean);
 }
 
 async function reset(req: Request) {
@@ -737,6 +1148,16 @@ async function api(req: Request, path: string): Promise<Response> {
   if (method === "GET" && download) return selfIntroDownload(download[1]!);
   const runAction = /^\/api\/runs\/([\w-]{1,64})\/(resume|dismiss)$/.exec(path);
   if (method === "POST" && runAction) return runTurn(runAction[1]!, () => (runAction[2] === "resume" ? resumeRun(req, runAction[1]!) : dismissRun(runAction[1]!)));
+  if (method === "GET" && path === "/api/applications/detail") return applicationDetail(new URL(req.url));
+  if (method === "GET" && path === "/api/applications/items") return json(await applicationItems());
+  if (method === "POST" && path === "/api/applications/threads") return startThread(req);
+  if (method === "POST" && path === "/api/applications/notes") return addNote(req);
+  if (method === "POST" && path === "/api/applications/steps") return stepsAction(req);
+  const threadAction = /^\/api\/applications\/threads\/(th_[\w-]{1,60})(?:\/(open|bind)|\/proposals\/(pr_[\w-]{1,20}))?$/.exec(path);
+  if (threadAction && method === "POST" && threadAction[2] === "open") return openThread(threadAction[1]!);
+  if (threadAction && method === "POST" && threadAction[2] === "bind") return bindThread(req, threadAction[1]!);
+  if (threadAction && method === "POST" && threadAction[3]) return proposalAction(req, threadAction[1]!, threadAction[3]);
+  if (threadAction && method === "DELETE" && !threadAction[2] && !threadAction[3]) return deleteThread(threadAction[1]!);
   if (method === "GET" && path === "/api/jobs") return json(await readSeenJobs());
   if (method === "GET" && path === "/api/files") return json(await listFiles());
   if (method === "GET" && path === "/api/file") return serveFile(req);

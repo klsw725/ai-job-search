@@ -22,7 +22,7 @@ import { ErrorBox, Icon, Markdown, formatTime } from "../ui.tsx";
 
 type Command = { name: string; description: string };
 
-function EventList({ sessionId, events, draft, title }: { sessionId: string; events: ChatEvent[]; draft: string; title: string }) {
+function EventList({ sessionId, events, draft, title, kind }: { sessionId: string; events: ChatEvent[]; draft: string; title: string; kind?: string }) {
   const results = useToolResults(events);
   const resolved = useResolved(events);
 
@@ -43,7 +43,7 @@ function EventList({ sessionId, events, draft, title }: { sessionId: string; eve
                 {e.sub && <div className="muted small">보조 AI</div>}
                 {e.text && <Markdown text={e.text} />}
                 <ToolList tools={e.tools} results={results} />
-                {!e.sub && e.text.trim().length > 200 && <ReplyActions text={e.text} name={title} />}
+                {!e.sub && e.text.trim().length > 200 && <ReplyActions text={e.text} name={title} noteSession={kind === "app-chat" ? sessionId : undefined} />}
               </div>
             );
           case "permission":
@@ -262,7 +262,7 @@ export function Chat({ sessionId }: { sessionId: string | null }) {
             </div>
           )}
           <ErrorBox error={error} />
-          {sessionId && <EventList sessionId={sessionId} events={events} draft={draft} title={title} />}
+          {sessionId && <EventList sessionId={sessionId} events={events} draft={draft} title={title} kind={current?.kind} />}
           {state !== "running" && <OutputFiles outputs={outputs} zipName={title} title="이 대화에서 AI가 만든 파일" />}
           {state === "running" && retry && <RetryNotice retry={retry} />}
           {state === "running" && !draft && !retry && <div className="muted small typing"><span className="spinner" /> 작업 중…</div>}

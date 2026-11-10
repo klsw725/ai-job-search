@@ -91,3 +91,28 @@ export async function saveSelfIntro(
   if (code !== 0) return { ok: false, error: String(body.error ?? `종료 코드 ${code}`) };
   return body as SavedSelfIntro;
 }
+
+type ToolOpts = { repo?: string; tool?: string; python?: string };
+
+// A dated memo in the application's archive notes.md, at any status.
+export async function appendNote(app: { date: string; company: string; role: string }, note: string, source: "web" | "ai", opts: ToolOpts & { now?: string } = {}) {
+  const repo = opts.repo ?? REPO_DIR;
+  const args = [opts.tool ?? TOOL, "append-note", "--company", app.company, "--role", app.role, "--date", app.date, "--source", source, "--root", repo];
+  if (opts.now) args.push("--now", opts.now);
+  const { code, body } = await runTool(args, note, opts);
+  if (Array.isArray(body) || code !== 0) throw new Error(Array.isArray(body) ? "메모를 저장하지 못했어요" : String(body.error ?? `종료 코드 ${code}`));
+  return body as { ok: true; path: string };
+}
+
+export type SavedSteps = { ok: true; path: string; sha256: string } | { ok: false; error: "changed"; current_sha256: string };
+
+// Replaces steps.json only if it is still the version read (sha256, or "none").
+export async function writeSteps(app: { date: string; company: string; role: string }, steps: unknown[], expectSha256: string, opts: ToolOpts = {}): Promise<SavedSteps> {
+  const repo = opts.repo ?? REPO_DIR;
+  const args = [opts.tool ?? TOOL, "write-steps", "--company", app.company, "--role", app.role, "--date", app.date, "--expect-sha256", expectSha256, "--root", repo];
+  const { code, body } = await runTool(args, JSON.stringify({ steps }), opts);
+  if (Array.isArray(body)) throw new Error("단계를 저장하지 못했어요");
+  if (code === EXIT_CONFLICT) return { ok: false, error: "changed", current_sha256: String(body.current_sha256 ?? "") };
+  if (code !== 0) throw new Error(String(body.error ?? `종료 코드 ${code}`));
+  return body as SavedSteps;
+}

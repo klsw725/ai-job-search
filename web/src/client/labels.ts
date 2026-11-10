@@ -210,6 +210,8 @@ export function describeTool(name: string, input: string): string {
       return "진행 계획 정리";
     case "Skill":
       return "작업 지침 불러오기";
+    case "mcp__ajs__propose_items":
+      return "메모·전형 단계 제안";
     case "AskUserQuestion":
       return "질문하기";
     default:

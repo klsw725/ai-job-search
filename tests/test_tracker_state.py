@@ -397,6 +397,85 @@ class WriteSelfIntro(TrackerStateCase):
         self.assertEqual(target.read_text(encoding="utf-8"), "untouched")
 
 
+class NotesAndSteps(TrackerStateCase):
+    """Per-application memo and steps the web UI saves; any status, one row, no symlinks."""
+
+    def call(self, command, data, *extra, date="2026-11-01", code=0):
+        args = [sys.executable, str(TOOL), command, "--company", "Acme", "--role", "Engineer", "--date", date, "--root", str(self.root), *extra]
+        proc = subprocess.run(args, input=data.encode("utf-8"), capture_output=True)
+        self.assertEqual(proc.returncode, code, proc.stdout.decode() + proc.stderr.decode())
+        return json.loads(proc.stdout)
+
+    def step(self, **over):
+        return {"id": "s1", "kind": "coding_test", "title": "코딩테스트", "status": "todo", "application": "2026-11-01", **over}
+
+    def test_notes_are_dated_bullets_tagged_with_the_application_at_any_status(self):
+        self.write_tracker("2026-11-01,Acme,,Engineer,,portal,applied,,77,,,,,")
+        out = self.call("append-note", "코딩테스트 11/15까지\n프로그래머스", "--now", "2026-11-10 14:02")
+        self.assertEqual(out["path"], "documents/applications/acme_engineer/notes.md")
+        self.call("append-note", "두 번째", "--source", "ai", "--now", "2026-11-10 14:05")
+        text = (self.root / out["path"]).read_text(encoding="utf-8")
+        self.assertEqual(text, "# 메모 · Acme / Engineer\n\n- 2026-11-10 14:02 (지원 2026-11-01, 직접 입력): 코딩테스트 11/15까지\n  프로그래머스\n- 2026-11-10 14:05 (지원 2026-11-01, AI 답변 저장): 두 번째\n")
+        self.assertEqual(self.rows()[0]["status"], "applied")
+
+    def test_a_note_needs_text_and_exactly_one_row(self):
+        self.write_tracker("2026-11-01,Acme,,Engineer,,portal,applied,,77,,,,,")
+        self.assertIn("empty", self.call("append-note", "  \n", code=1)["error"])
+        self.assertIn("no single", self.call("append-note", "x", date="2026-01-01", code=1)["error"])
+
+    def test_steps_replace_only_the_version_the_caller_read(self):
+        self.write_tracker("2026-11-01,Acme,,Engineer,,portal,applied,,77,,,,,")
+        doc = json.dumps({"steps": [self.step(due="2026-11-15", link="https://p.io/t", extra="dropped")]})
+        first = self.call("write-steps", doc, "--expect-sha256", "none")
+        path = self.root / first["path"]
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["steps"][0], self.step(due="2026-11-15", link="https://p.io/t"))
+        self.assertEqual(first["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+        stale = self.call("write-steps", json.dumps({"steps": []}), "--expect-sha256", "none", code=3)
+        self.assertEqual(stale["current_sha256"], first["sha256"])
+        self.call("write-steps", json.dumps({"steps": []}), "--expect-sha256", first["sha256"])
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["steps"], [])
+
+    def test_the_version_check_hashes_the_bytes_on_disk(self):
+        self.write_tracker("2026-11-01,Acme,,Engineer,,portal,applied,,77,,,,,")
+        path = self.root / "documents/applications/acme_engineer/steps.json"
+        path.parent.mkdir(parents=True)
+        raw = json.dumps({"steps": [self.step()]}).replace(",", ",\r\n").encode("utf-8")
+        path.write_bytes(raw)
+        self.call("write-steps", json.dumps({"steps": []}), "--expect-sha256", hashlib.sha256(raw).hexdigest())
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["steps"], [])
+
+    def test_a_steps_origin_keeps_its_proposal_item(self):
+        self.write_tracker("2026-11-01,Acme,,Engineer,,portal,applied,,77,,,,,")
+        out = self.call("write-steps", json.dumps({"steps": [self.step(**{"from": {"thread": "th_1", "proposal": "pr_1", "item": 2, "x": 1}})]}), "--expect-sha256", "none")
+        saved = json.loads((self.root / out["path"]).read_text(encoding="utf-8"))["steps"][0]
+        self.assertEqual(saved["from"], {"thread": "th_1", "proposal": "pr_1", "item": 2})
+
+    def test_bad_steps_are_refused(self):
+        self.write_tracker("2026-11-01,Acme,,Engineer,,portal,applied,,77,,,,,")
+        for bad in [self.step(kind="party"), self.step(due="11/15"), self.step(link="javascript:alert(1)"), self.step(title=" "), self.step(application="")]:
+            with self.subTest(bad=bad):
+                self.call("write-steps", json.dumps({"steps": [bad]}), "--expect-sha256", "none", code=1)
+        self.call("write-steps", json.dumps({"steps": [self.step(), self.step()]}), "--expect-sha256", "none", code=1)
+        self.assertFalse((self.root / "documents/applications/acme_engineer/steps.json").exists())
+
+    def test_a_symlinked_folder_or_file_is_refused(self):
+        outside = Path(self._tmp.name + "-notes-outside")
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside)
+        self.write_tracker("2026-11-01,Acme,,Engineer,,portal,applied,,77,,,,,")
+        (self.root / "documents/applications").mkdir(parents=True)
+        os.symlink(outside, self.root / "documents/applications/acme_engineer")
+        self.assertIn("plain directory", self.call("append-note", "x", code=1)["error"])
+        os.unlink(self.root / "documents/applications/acme_engineer")
+        (self.root / "documents/applications/acme_engineer").mkdir()
+        (outside / "n.md").write_text("untouched", encoding="utf-8")
+        os.symlink(outside / "n.md", self.root / "documents/applications/acme_engineer/notes.md")
+        self.assertIn("not a plain text file", self.call("append-note", "x", code=1)["error"])
+        self.assertEqual((outside / "n.md").read_text(encoding="utf-8"), "untouched")
+        self.assertEqual(list(p.name for p in outside.iterdir()), ["n.md"])
+
+
 class SelfIntroCount(unittest.TestCase):
     """tools/self_intro_count.py counts as the 10-korea-market.md snippet does."""
 

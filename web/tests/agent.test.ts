@@ -56,6 +56,8 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
     deleted.push(id);
   },
   getSessionMessages: async () => [],
+  createSdkMcpServer: (o: { name: string }) => ({ type: "sdk", name: o.name, instance: o }),
+  tool: (name: string, description: string, inputSchema: unknown, handler: unknown) => ({ name, description, inputSchema, handler }),
 }));
 
 const { ChatSession, SessionManager, messageToEvents } = await import("../src/server/agent.ts");
@@ -180,6 +182,42 @@ describe("ChatSession", () => {
     expect(fakes.at(-1)!.options.disallowedTools).toBeUndefined();
     expect(fakes.at(-1)!.options.systemPrompt.append).not.toContain("NON-INTERACTIVE");
     chat.close();
+  });
+
+  test("a chat with context keeps questions, adds its instructions, blocks and allows tools, and has no result schema", async () => {
+    const mcp = { ajs: { type: "sdk", name: "ajs", instance: {} } } as never;
+    const s = new ChatSession(() => {}, () => {}, {
+      rules: { allow: ["Read"], deny: ["Read(.env)"] },
+      chat: { systemAppend: "APPLICATION CHAT", disallow: ["Write", "Bash"], allow: ["mcp__ajs__propose_items"], mcpServers: mcp },
+    });
+    const opts = fakes.at(-1)!.options;
+    expect(opts.systemPrompt.append).toEndWith("\n\nAPPLICATION CHAT");
+    expect(opts.disallowedTools).toEqual(["Read(.env)", "Write", "Bash"]);
+    expect(opts.allowedTools).toEqual(["Read", "mcp__ajs__propose_items"]);
+    expect(opts.mcpServers).toBe(mcp);
+    expect(opts.strictMcpConfig).toBe(true);
+    expect(opts.outputFormat).toBeUndefined();
+    s.close();
+    const plain = new ChatSession(() => {}, () => {});
+    expect(fakes.at(-1)!.options.strictMcpConfig).toBeUndefined();
+    plain.close();
+  });
+
+  test("a plain chat that reopened a context chat's transcript is replaced by one under that context", async () => {
+    const m = new SessionManager(() => {}, async () => null);
+    const plain = await m.create({});
+    fakes.at(-1)!.emit({ type: "system", subtype: "init", session_id: "sdk-app", permissionMode: "default" });
+    await tick();
+    const chat = { systemAppend: "APPLICATION CHAT", disallow: ["Write"] };
+    const scoped = await m.resumeWith("sdk-app", { kind: "app-chat", chat });
+    expect(scoped).not.toBe(plain);
+    expect(plain.state).toBe("closed");
+    expect(fakes.at(-1)!.options.disallowedTools).toEqual(["Write"]);
+    expect(fakes.at(-1)!.options.resume).toBe("sdk-app");
+    fakes.at(-1)!.emit({ type: "system", subtype: "init", session_id: "sdk-app", permissionMode: "default" });
+    await tick();
+    expect(await m.resumeWith("sdk-app", { kind: "app-chat", chat })).toBe(scoped);
+    scoped.close();
   });
 
   test("resuming a run reuses only a session already under the same run options", async () => {

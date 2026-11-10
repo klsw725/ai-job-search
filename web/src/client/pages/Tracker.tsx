@@ -1,5 +1,6 @@
 import { Fragment, useState, type DragEvent } from "react";
-import { fileUrl, safeHttpUrl, sendJSON, useFetch } from "../api.ts";
+import { fileUrl, safeHttpUrl, sendJSON, useApplicationItems, useFetch, type AppItem } from "../api.ts";
+import { STEP_KIND_LABEL } from "../appChat.tsx";
 import { COLUMNS, FINAL_LABEL, FINAL_STATUSES, applicationId, canonicalStatus, columnOf, planMove, rowKey, type ColumnId } from "../pipeline.ts";
 import { STATUS_LABEL } from "../labels.ts";
 import { Card, CommandButton, Deadline, EmptyState, ErrorBox, Icon, Modal, PageHeader, StatusChip } from "../ui.tsx";
@@ -20,8 +21,18 @@ function today() {
 }
 
 // Resolves to the row as the tool wrote it: its date changes when a draft is submitted.
+// A move that worked but could not take everything along (steps left on the
+// old date) says so; the page that shows next takes the message once.
+let carried: string | null = null;
+export const takeMoveWarning = () => {
+  const w = carried;
+  carried = null;
+  return w;
+};
+
 export async function move(row: Row, status: string, note?: string): Promise<Row> {
-  const out = await sendJSON<{ row?: Row }>("/api/tracker/row", "PATCH", {
+  carried = null;
+  const out = await sendJSON<{ row?: Row; warning?: string }>("/api/tracker/row", "PATCH", {
     company: row.company,
     role: row.role,
     date: row.date,
@@ -29,6 +40,7 @@ export async function move(row: Row, status: string, note?: string): Promise<Row
     status,
     note: note?.trim() || undefined,
   });
+  if (out.warning) carried = `지원 단계는 옮겼어요. 다만 ${out.warning}`;
   return out.row ?? row;
 }
 
@@ -52,7 +64,7 @@ function Docs({ row, files }: { row: Row; files: Set<string> }) {
   );
 }
 
-function AppCard({ row, files, onMove }: { row: Row; files: Set<string>; onMove: (row: Row, to: ColumnId) => void }) {
+function AppCard({ row, files, next, onMove }: { row: Row; files: Set<string>; next?: AppItem["next"]; onMove: (row: Row, to: ColumnId) => void }) {
   const column = columnOf(row.status);
   return (
     <li
@@ -71,6 +83,11 @@ function AppCard({ row, files, onMove }: { row: Row; files: Set<string>; onMove:
         {column === "closed" && <StatusChip status={canonicalStatus(row.status)} />}
         {row.fit_rating && <span>적합도 {row.fit_rating}</span>}
         {row.deadline && column === "drafted" && <Deadline date={row.deadline} />}
+        {next && (
+          <span className="step-badge" title={next.title}>
+            {STEP_KIND_LABEL[next.kind] ?? "단계"} <Deadline date={next.due} />
+          </span>
+        )}
         {row.date && <span>{column === "drafted" ? "작성" : "지원"} {row.date.slice(5).replace("-", "/")}</span>}
       </div>
       <div className="app-foot">
@@ -94,8 +111,9 @@ function AppCard({ row, files, onMove }: { row: Row; files: Set<string>; onMove:
   );
 }
 
-function Board({ rows, files, onMove }: { rows: Row[]; files: Set<string>; onMove: (row: Row, to: ColumnId) => void }) {
+function Board({ rows, files, items, onMove }: { rows: Row[]; files: Set<string>; items: AppItem[]; onMove: (row: Row, to: ColumnId) => void }) {
   const [over, setOver] = useState<ColumnId | null>(null);
+  const nextFor = (r: Row) => items.find((i) => i.date === r.date && i.company === r.company && i.role === r.role)?.next;
   const byKey = new Map(rows.map((r) => [rowKey(r), r]));
   const drop = (to: ColumnId) => (e: DragEvent) => {
     e.preventDefault();
@@ -129,7 +147,7 @@ function Board({ rows, files, onMove }: { rows: Row[]; files: Set<string>; onMov
             </header>
             <ul className="board-list">
               {items.map((r) => (
-                <AppCard key={rowKey(r)} row={r} files={files} onMove={onMove} />
+                <AppCard key={rowKey(r)} row={r} files={files} next={nextFor(r)} onMove={onMove} />
               ))}
               {items.length === 0 && <li className="board-empty muted small">{c.hint}</li>}
             </ul>
@@ -278,6 +296,7 @@ function Table({ rows, files }: { rows: Row[]; files: Set<string> }) {
 export function Tracker() {
   const { data, error, reload } = useFetch<{ exists: boolean; header: string[]; rows: Row[] }>("/api/tracker", { live: true });
   const files = useFetch<FileEntry[]>("/api/files", { live: true });
+  const items = useApplicationItems();
   const [view, setView] = useState<"board" | "table">("board");
   const [pending, setPending] = useState<Pending | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
@@ -291,7 +310,10 @@ export function Tracker() {
     setMoveError(null);
     if (plan.kind === "direct") {
       move(row, plan.status)
-        .then(() => reload())
+        .then(() => {
+          setMoveError(takeMoveWarning());
+          reload();
+        })
         .catch((e: Error) => {
           setMoveError(e.message);
           reload();
@@ -345,7 +367,7 @@ export function Tracker() {
               표
             </button>
           </div>
-          {view === "board" ? <Board rows={rows} files={fileSet} onMove={onMove} /> : <Table rows={rows} files={fileSet} />}
+          {view === "board" ? <Board rows={rows} files={fileSet} items={items.data ?? []} onMove={onMove} /> : <Table rows={rows} files={fileSet} />}
         </>
       )}
       {pending && (
@@ -354,6 +376,7 @@ export function Tracker() {
           onClose={() => setPending(null)}
           onDone={() => {
             setPending(null);
+            setMoveError(takeMoveWarning());
             reload();
           }}
         />
